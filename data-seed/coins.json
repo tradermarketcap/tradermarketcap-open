@@ -172,6 +172,7 @@
   "cosmos": {"symbol": "ATOM", "name": "Cosmos Hub", "supply": {"method": "cosmos", "lcd": "https://cosmos-rest.publicnode.com", "denom": "uatom", "explorer": "https://www.mintscan.io/cosmos/address/"}},
   "kaspa": {"symbol": "KAS", "name": "Kaspa", "supply": {"method": "kaspa", "max": 28704035605}},
   "casper": {"symbol": "CSPR", "name": "Casper", "supply": {"method": "casper"}},
+  "chainlink": {"symbol": "LINK", "name": "Chainlink", "supply": {"method": "chainlink", "max": 1000000000}},
   "ether-classic": {"symbol": "ETC", "name": "Ethereum Classic", "supply": {"method": "blockscout-coinsupply", "url": "https://etc.blockscout.com/api?module=stats&action=coinsupply", "max": 210700000}},
   "stacks": {"symbol": "STX", "name": "Stacks", "supply": {"method": "stacks"}},
   "akash": {"symbol": "AKT", "name": "Akash Network", "supply": {"method": "cosmos", "lcd": "https://akash-rest.publicnode.com", "denom": "uakt", "explorer": "https://www.mintscan.io/akash/address/"}},

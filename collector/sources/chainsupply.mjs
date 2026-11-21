@@ -8,6 +8,7 @@ import { resetSupply } from './trac.mjs';
 import { extraSupply } from './extra.mjs';
 
 const BURN = '0x000000000000000000000000000000000000dEaD';
+const LINK_TOKEN = '0x514910771AF9Ca656af840dff83E8264EcF986CA'; // Chainlink ERC-20 on Ethereum
 
 // BNB on BNB Smart Chain (BSC). BSC mints no new BNB: validators earn fees only. Every BNB that existed when BSC
 // launched was put in the TokenHub system contract at genesis (176,405,560.9 BNB, plus 1,000 BNB for two bootstrap
@@ -268,6 +269,25 @@ const METHODS = {
   },
   async reset() {
     return resetSupply();
+  },
+  // Chainlink (LINK): the full 1B supply has existed since 2017. Chainlink publishes the
+  // official non-circulating wallet list and each wallet's balance at supply.chain.link
+  // (linked from https://chain.link/circulating-supply). We subtract exactly those
+  // wallets; a failed read fails the whole supply read, so the site keeps the last good number.
+  async chainlink() {
+    const url = 'https://supply.chain.link/supply';
+    const d = await getJSON(url);
+    const total = Number(BigInt(d.totalSupply)) / 1e18;
+    const circ = Number(BigInt(d.circulatingSupply)) / 1e18;
+    if (!(total > 0) || !(circ > 0) || circ > total) throw new Error('bad chainlink supply');
+    const p = { chain: 'eth', address: LINK_TOKEN };
+    const excluded = (d.balances || [])
+      .map(b => ({ reason: 'Chainlink non-circulating wallet', holder: b.address, amount: Number(BigInt(b.balance)) / 1e18, src: holderLink(p, b.address) }))
+      .filter(e => e.amount > 0);
+    const out = excluded.reduce((s, e) => s + e.amount, 0);
+    if (Math.abs(total - out - circ) > 1) throw new Error('chainlink supply does not reconcile');
+    return { circulating: circ, total, src: url, parts: [{ chain: 'eth', amount: total, src: tokenLink(p) }], excluded,
+      note: 'Chainlink official non-circulating wallet list (chain.link/circulating-supply); balances read from that list' };
   },
   async extra() {
     return extraSupply();

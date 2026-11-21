@@ -17,6 +17,7 @@
       { "chain": "arbitrum", "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" },
       { "chain": "avax", "address": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E" } ] } },
   "bnb": { "symbol": "BNB", "name": "BNB", "supply": { "method": "bnb" } },
+  "thorchain": { "symbol": "RUNE", "name": "THORChain", "supply": { "method": "thorchain" } },
   "solana": { "symbol": "SOL", "name": "Solana", "supply": { "method": "solana" } },
   "cardano": { "symbol": "ADA", "name": "Cardano", "supply": { "method": "cardano-koios", "max": 45000000000 } },
   "tron": { "symbol": "TRX", "name": "TRON", "supply": { "method": "tron" } },

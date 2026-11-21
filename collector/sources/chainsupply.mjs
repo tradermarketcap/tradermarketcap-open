@@ -57,6 +57,22 @@ async function tokenTotal(p) {
 }
 
 const METHODS = {
+  async thorchain() {
+    const src = 'https://gateway.liquify.com/chain/thorchain_api/thorchain/supply';
+    const { total, circulating, locked } = await getJSON(src, { headers: { 'X-Client-ID': 'TraderMarketCap' } });
+    const reserve = locked?.reserve;
+    if (![total, circulating, reserve].every(value => Number.isSafeInteger(value) && value >= 0) || total === 0) {
+      throw new Error('invalid THORNode RUNE supply');
+    }
+    // THORNode subtracts the reserve in base units, then truncates each field to whole RUNE.
+    const remainder = total - circulating - reserve;
+    if (remainder !== 0 && remainder !== 1) throw new Error('inconsistent THORNode RUNE supply');
+    return {
+      total, circulating, src,
+      excluded: [{ reason: 'THORChain reserve module', amount: reserve, src }],
+      note: 'THORNode bank supply less the reserve. Bonded and pooled RUNE count as circulating.',
+    };
+  },
   async blockchair(r) {
     const url = `https://api.blockchair.com/${r.chain}/stats`;
     const c = (await getJSON(url)).data.circulation / 10 ** (r.decimals ?? 8);

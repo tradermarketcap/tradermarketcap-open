@@ -1,5 +1,6 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { readSupply } from '../collector/sources/chainsupply.mjs';
 
 // Real response shapes, captured from BNB Chain's public RPC and bnbburn.info on 2026-11-21. No network in tests.
@@ -10,6 +11,41 @@ const BALANCES = {
 };
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
+
+const runeSource = 'https://gateway.liquify.com/chain/thorchain_api/thorchain/supply';
+function mockRuneSupply(body) {
+  globalThis.fetch = async url => {
+    assert.equal(String(url), runeSource);
+    return { ok: true, json: async () => body };
+  };
+}
+
+test('RUNE: the seed rule returns the node’s whole-RUNE supply and reserve without double deduction', async () => {
+  const { thorchain } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  assert.equal(thorchain.symbol, 'RUNE');
+  // Native THORNode response. Independent truncation leaves a one-RUNE difference.
+  mockRuneSupply({ total: 353826119, circulating: 329090305, locked: { reserve: 24735813 } });
+  const s = await readSupply(thorchain.supply);
+  assert.equal(s.total, 353826119);
+  assert.equal(s.circulating, 329090305);
+  assert.deepEqual(s.excluded, [{ reason: 'THORChain reserve module', amount: 24735813, src: runeSource }]);
+  assert.equal(s.checked, true);
+  assert.equal(s.src, runeSource);
+});
+
+test('RUNE: reject missing reserve, invalid units or inconsistent totals', async () => {
+  for (const body of [
+    { total: 100, circulating: 100 },
+    { total: 100, circulating: 97, locked: { reserve: '3' } },
+    { total: 100, circulating: 101, locked: { reserve: 0 } },
+    { total: 100, circulating: 95, locked: { reserve: 3 } },
+  ]) {
+    mockRuneSupply(body);
+    await assert.rejects(readSupply({ method: 'thorchain' }), /THORNode RUNE supply/);
+  }
+  mockRuneSupply({ total: 100, circulating: 100, locked: { reserve: 0 } });
+  assert.equal((await readSupply({ method: 'thorchain' })).circulating, 100);
+});
 
 // Fake fetch: answers eth_getBalance from BALANCES and the burn tracker with the given body.
 function fakeChain(tracker) {

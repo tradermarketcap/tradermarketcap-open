@@ -47,3 +47,26 @@ test('bnb: a broken tracker fails the read instead of guessing', async () => {
   fakeChain({ bcSupply: 0, bscSupply: 90000000 });
   await assert.rejects(readSupply({ method: 'bnb' }), /tracker/);
 });
+
+test('sui: circulating comes from the official Sui Explorer API and locked remainder is excluded', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async url => {
+    assert.ok(String(url).includes('sui-circulation.suiexplorer.com'));
+    return { ok: true, status: 200, json: async () => 4139043544.1303763 };
+  };
+  try {
+    const s = await readSupply({ method: 'sui', max: 10000000000 });
+    assert.equal(s.circulating, 4139043544.1303763);
+    assert.equal(s.total, 10000000000);
+    assert.equal(s.excluded.length, 1);
+    assert.ok(Math.abs(s.excluded[0].amount - (10000000000 - 4139043544.1303763)) < 0.01);
+    assert.equal(s.checked, true);
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('sui: a broken API answer fails the read', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => 0 });
+  try { await assert.rejects(readSupply({ method: 'sui' }), /bad sui/); }
+  finally { globalThis.fetch = realFetch; }
+});

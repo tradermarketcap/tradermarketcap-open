@@ -25,6 +25,7 @@ export const VENUES = {
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
   cryptocom: { name: 'Crypto.com Exchange', type: 'Exchange', site: 'https://crypto.com/exchange' },
   upbit: { name: 'Upbit', type: 'Exchange', site: 'https://upbit.com' },
+  bitfinex: { name: 'Bitfinex', type: 'Exchange', site: 'https://www.bitfinex.com' },
 };
 
 let krakenPairs = null, krakenPairsAt = 0;
@@ -220,6 +221,31 @@ export const READERS = {
         change24h: n(v.signed_change_rate) != null ? n(v.signed_change_rate) * 100 : null,
         api: `https://api.upbit.com/v1/ticker?markets=${v.market}`,
         trade: `https://upbit.com/exchange?code=CRIX.UPBIT.${v.market}`,
+      });
+    }
+    return out;
+  },
+  // Bitfinex tickers are arrays: [symbol, bid, bidSize, ask, askSize, dailyChange,
+  // dailyChangePerc, lastPrice, volume(base), high, low, timestamp]. Symbols carry a
+  // 't' (trading) or 'f' (funding) prefix; funding rows are skipped. UST is USDT.
+  async bitfinex() {
+    const d = await getJSON('https://api-pub.bitfinex.com/v2/tickers?symbols=ALL', { timeout: 25000 });
+    if (!Array.isArray(d)) throw new Error('bitfinex bad response');
+    const out = [];
+    for (const v of d) {
+      if (!Array.isArray(v) || typeof v[0] !== 'string' || !v[0].startsWith('t')) continue;
+      const body = v[0].slice(1);
+      let b = null, q = null, rawQ = null;
+      for (const [suffix, quote] of [['USDC', 'USDC'], ['UST', 'USDT'], ['USD', 'USD']]) {
+        if (body.endsWith(suffix) && body.length > suffix.length) { b = body.slice(0, -suffix.length); q = quote; rawQ = suffix; break; }
+      }
+      if (!keep(sym(b), q)) continue;
+      const price = n(v[7]), volBase = n(v[8]);
+      out.push({
+        venue: 'bitfinex', base: sym(b), quote: q, price, volBase, volQuote: volBase != null && price != null ? volBase * price : null,
+        change24h: n(v[6]) != null ? n(v[6]) * 100 : null,
+        api: `https://api-pub.bitfinex.com/v2/tickers/${v[0]}`,
+        trade: `https://www.bitfinex.com/t/${b}${rawQ}`,
       });
     }
     return out;

@@ -17,6 +17,7 @@ function fakeFetch(body) {
 const bybitFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bybit-spot-tickers.json', import.meta.url), 'utf8'));
 const bitgetFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitget-spot-tickers.json', import.meta.url), 'utf8'));
 const cryptocomFixture = () => JSON.parse(readFileSync(new URL('./fixtures/cryptocom-tickers.json', import.meta.url), 'utf8'));
+const bitfinexFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitfinex-tickers.json', import.meta.url), 'utf8'));
 
 test('bybit: USD-quoted spot pairs with volume, change and links', async () => {
   const urls = fakeFetch(bybitFixture());
@@ -112,4 +113,27 @@ test('upbit: USDT-quoted pairs only, QUOTE-BASE market names', async () => {
 test('upbit: an empty market list fails the read', async () => {
   globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('/v1/market/all') ? [] : []), { status: 200 });
   await assert.rejects(READERS.upbit(), /no USDT markets/);
+});
+
+test('bitfinex: USD/UST spot pairs with volume, change and links', async () => {
+  const urls = fakeFetch(bitfinexFixture());
+  const ms = await READERS.bitfinex();
+  assert.deepEqual(urls, ['https://api-pub.bitfinex.com/v2/tickers?symbols=ALL']);
+  assert.ok(VENUES.bitfinex);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'BTC/USDT', 'ETH/USD']);
+  const btc = ms[0];
+  assert.equal(btc.venue, 'bitfinex');
+  assert.equal(btc.price, 60025);
+  assert.equal(btc.volBase, 5425.86990936);
+  assert.ok(Math.abs(btc.volQuote - 5425.86990936 * 60025) < 1e-6);
+  assert.ok(Math.abs(btc.change24h - 0.242151) < 1e-9);
+  assert.equal(btc.api, 'https://api-pub.bitfinex.com/v2/tickers/tBTCUSD');
+  assert.equal(btc.trade, 'https://www.bitfinex.com/t/BTCUSD');
+  assert.equal(ms[1].api, 'https://api-pub.bitfinex.com/v2/tickers/tBTCUST');
+  assert.equal(ms[1].trade, 'https://www.bitfinex.com/t/BTCUST');
+});
+
+test('bitfinex: a non-array error answer fails the read', async () => {
+  fakeFetch('ERR_UNKNOWN');
+  await assert.rejects(READERS.bitfinex(), /bad response/);
 });

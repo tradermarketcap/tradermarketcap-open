@@ -1,0 +1,11 @@
+{
+  "code": "00000",
+  "msg": "success",
+  "requestTime": 1763700000000,
+  "data": [
+    { "symbol": "BTCUSDT", "bidPr": "97000.1", "bidSz": "0.5", "askPr": "97000.2", "askSz": "0.4", "lastPr": "97000.15", "open": "95000", "change24h": "0.0211", "high24h": "97500", "low24h": "94800", "quoteVolume": "970001500.5", "baseVolume": "10000.5", "usdtVolume": "970001500.5" },
+    { "symbol": "ETHUSDC", "bidPr": "3500.1", "bidSz": "2", "askPr": "3500.2", "askSz": "3", "lastPr": "3500.15", "open": "3600", "change24h": "-0.0277", "high24h": "3650", "low24h": "3480", "quoteVolume": "35001500", "baseVolume": "10000", "usdtVolume": "35001500" },
+    { "symbol": "ETHBTC", "bidPr": "0.0361", "bidSz": "1", "askPr": "0.0362", "askSz": "1", "lastPr": "0.0361", "open": "0.0379", "change24h": "-0.0475", "high24h": "0.038", "low24h": "0.036", "quoteVolume": "36.1", "baseVolume": "1000" },
+    { "symbol": "XYZEUR", "bidPr": "1", "bidSz": "1", "askPr": "1.1", "askSz": "1", "lastPr": "1.05", "open": "1", "change24h": "0.05", "high24h": "1.1", "low24h": "1", "quoteVolume": "105", "baseVolume": "100" }
+  ]
+}

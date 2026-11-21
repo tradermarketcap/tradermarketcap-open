@@ -113,3 +113,26 @@ test('upbit: an empty market list fails the read', async () => {
   globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('/v1/market/all') ? [] : []), { status: 200 });
   await assert.rejects(READERS.upbit(), /no USDT markets/);
 });
+
+const htxFixture = () => JSON.parse(readFileSync(new URL('./fixtures/htx-tickers.json', import.meta.url), 'utf8'));
+
+test('htx: USD-quoted spot pairs with volume, change and links', async () => {
+  const urls = fakeFetch(htxFixture());
+  const ms = await READERS.htx();
+  assert.deepEqual(urls, ['https://api.huobi.pro/market/tickers']);
+  assert.ok(VENUES.htx);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USDT', 'ETH/USDC', 'XRP/USDT']);
+  const btc = ms[0];
+  assert.equal(btc.venue, 'htx');
+  assert.equal(btc.price, 60144.03);
+  assert.equal(btc.volBase, 8872.935555074027);
+  assert.equal(btc.volQuote, 518685070.6358959);
+  assert.ok(Math.abs(btc.change24h - (60144.03 / 59481.46 - 1) * 100) < 1e-9);
+  assert.equal(btc.api, 'https://api.huobi.pro/market/detail/merged?symbol=btcusdt');
+  assert.equal(btc.trade, 'https://www.htx.com/trade/btc_usdt');
+});
+
+test('htx: an error answer (status not ok) fails the read', async () => {
+  fakeFetch({ status: 'error', data: [] });
+  await assert.rejects(READERS.htx(), /htx status error/);
+});

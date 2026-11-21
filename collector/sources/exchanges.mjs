@@ -23,7 +23,28 @@ export const VENUES = {
   binanceus: { name: 'Binance.US', type: 'Exchange', site: 'https://www.binance.us' },
   bybit: { name: 'Bybit', type: 'Exchange', site: 'https://www.bybit.com' },
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
+  bitfinex: { name: 'Bitfinex', type: 'Exchange', site: 'https://www.bitfinex.com' },
 };
+
+// Bitfinex writes some symbols with a colon (tLINK:USD, tAVAX:USD) and others joined (tBTCUSD),
+// so both forms have to be read. UST is Bitfinex's name for USDT. Anything still unclear is dropped.
+function bitfinexPair(symbol) {
+  if (!symbol.startsWith('t')) return null;
+  const body = symbol.slice(1);
+  let base, raw;
+  if (body.includes(':')) {
+    [base, raw] = body.split(':');
+  } else {
+    for (const s of ['USDT', 'USDC', 'UST', 'USD']) {
+      if (body.endsWith(s) && body.length > s.length) { base = body.slice(0, -s.length); raw = s; break; }
+    }
+  }
+  if (!base || !raw) return null;
+  const quote = raw === 'UST' ? 'USDT' : raw;
+  if (!base || !keep(base, quote)) return null;
+  if (base.includes('TEST') || raw.includes('TEST')) return null; // Bitfinex's play-money pairs
+  return { base, quote, raw };
+}
 
 let krakenPairs = null, krakenPairsAt = 0;
 
@@ -176,6 +197,28 @@ export const READERS = {
         change24h: n(v.change24h) != null ? n(v.change24h) * 100 : null,
         api: `https://api.bitget.com/api/v2/spot/market/tickers?symbol=${v.symbol}`,
         trade: `https://www.bitget.com/spot/${b}${q}`,
+      });
+    }
+    return out;
+  },
+  // Bitfinex rows are arrays, not objects: [sym, bid, bidSize, ask, askSize, dailyChange, dailyChangePerc,
+  // last, volBase, high, low, ts]. Funding rows ('f' prefix) are not spot markets. An error answer is a
+  // bare string (ERR_UNKNOWN) or an empty list, and both must fail loudly instead of returning no markets.
+  async bitfinex() {
+    const d = await getJSON('https://api-pub.bitfinex.com/v2/tickers?symbols=ALL', { timeout: 25000 });
+    if (!Array.isArray(d) || d.length === 0) throw new Error('bitfinex bad response');
+    const out = [];
+    for (const v of d) {
+      if (!Array.isArray(v) || v.length < 10 || typeof v[0] !== 'string') continue;
+      const p = bitfinexPair(v[0]);
+      if (!p) continue;
+      const price = n(v[7]), volBase = n(v[8]);
+      out.push({
+        venue: 'bitfinex', base: sym(p.base), quote: p.quote, price, volBase,
+        volQuote: volBase != null && price != null ? volBase * price : null,
+        change24h: n(v[6]) != null ? n(v[6]) * 100 : null,
+        api: `https://api-pub.bitfinex.com/v2/tickers?symbols=${v[0]}`,
+        trade: `https://trading.bitfinex.com/t/${p.base}:${p.raw}`,
       });
     }
     return out;

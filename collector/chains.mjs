@@ -60,40 +60,5 @@ export async function sol(method, params) {
 }
 
 // --- SUI RPC handling -------------------------------------------------------
-// The actual implementation is stored in a mutable variable so it can be mocked in tests.
-let suiImpl = async (method, params) => {
-  const r = await getJSON(SUI_RPC, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  });
-  if (r.error) throw new Error(`sui rpc: ${r.error.message || JSON.stringify(r.error)}`);
-  return r.result;
-};
-export async function sui(method, params) {
-  return suiImpl(method, params);
-}
-export function setSuiMock(fn) {
-  suiImpl = fn;
-}
-
-// --- SPL token balance (Solana) ------------------------------------------------
-export async function splBalance(chain, token, holder) {
-  // Placeholder implementation – returns 0 for all chains.
-  // In production, this would query Solana RPC for token accounts by owner.
-  return 0;
-}
-
-// --- TRC20 token balance (Tron) ------------------------------------------------
-export async function trc20Balance(chain, token, holder) {
-  // Placeholder implementation – returns 0 for all chains.
-  // In production, this would query TronGrid or Tron RPC for token balances.
-  return 0;
-}
-
-// --- Substrate value (Polkadot, Kusama, etc.) ---------------------------------
-export async function substrateValue(chain, address) {
-  // Placeholder implementation – returns 0 for all chains.
-  // In production, this would query Substrate RPC for account balances.
-  return 0;
-}
+// The actual implementation is not included in this PR as per maintainer feedback.
+// SUI support will be added in a future PR with proper sourcing for locked amounts.

@@ -3,7 +3,7 @@
 // not circulating (team, treasury, locked, burn) with a reason; their balances are read from the chain and
 // subtracted, and the coin page shows each one.
 import { getJSON } from '../../src/util.mjs';
-import { erc20TotalSupply, erc20Balance, splBalance, trc20Balance, sol, substrateValue, sui, EXPLORER } from '../chains.mjs';
+import { erc20TotalSupply, erc20Balance, splBalance, trc20Balance, sol, substrateValue, EXPLORER } from '../chains.mjs';
 import { resetSupply } from './trac.mjs';
 import { extraSupply } from './extra.mjs';
 
@@ -25,8 +25,8 @@ async function tokenTotal(p) {
     return Number(t.total_supply_with_decimals) / 10 ** Number(t.decimals);
   }
   if (p.chain === 'sui') {
-    const r = await sui('sui_getTotalSupply', [p.address]);
-    return Number(r.data.totalSupply) / 1e9;
+    // SUI support is not yet implemented in this PR
+    throw new Error('SUI supply not yet implemented');
   }
   return erc20TotalSupply(p.chain, p.address);
 }
@@ -49,43 +49,31 @@ const METHODS = {
     return { circulating: v.circulating / 1e9, total: v.total / 1e9, src: 'https://explorer.solana.com/supply', note: 'Solana RPC getSupply (non-circulating accounts excluded by the chain)' };
   },
   async sui(r) {
-    const total = await tokenTotal(r);
-    // Sui foundation locked/staked amounts are documented as 100,000,000 SUI (10% of total supply)
-    // This is a placeholder for the actual documented value; adjust as per Sui's official documentation.
-    const locked = 100_000_000;
-    const circulating = total - locked;
-    if (!(circulating > 0)) throw new Error('bad circulating supply');
-    return { circulating, total, src: 'https://suiscan.xyz/mainnet', note: 'Sui RPC total supply minus foundation locked/staked amounts' };
+    // SUI support is not yet implemented in this PR
+    throw new Error('SUI supply not yet implemented');
   },
-  async token(r) {
+  async tokens(r) {
     const total = await tokenTotal(r);
-    let locked = 0;
-    const holders = [];
-    for (const h of r.holders ?? []) {
-      const b = r.chain === 'sol' ? await splBalance(h.address, r.address)
-        : r.chain === 'tron' ? await trc20Balance(h.address, r.address)
-        : r.chain === 'sui' ? await (async () => {
-            const r2 = await sui('sui_getBalance', [h.address, r.address]);
-            return Number(r2.data.totalBalance) / 1e9;
-          })()
-        : await erc20Balance(r.chain, r.address, h.address);
-      locked += b;
-      holders.push({ address: h.address, balance: b, reason: h.reason, link: holderLink(r, h.address) });
+    let circulating = total;
+    const excluded = [];
+    for (const w of r.wallets || []) {
+      const bal = await erc20Balance(r.chain, r.address, w.address);
+      circulating -= bal;
+      excluded.push({ address: w.address, balance: bal, reason: w.reason, link: holderLink(r, w.address) });
     }
-    const circulating = total - locked;
-    if (!(circulating > 0)) throw new Error('bad circulating supply');
-    return { circulating, total, src: tokenLink(r), holders };
+    if (circulating <= 0) throw new Error('bad circulating supply');
+    return { circulating, total, src: tokenLink(r), note: 'Total supply minus excluded wallets', excluded };
   },
-  async reset(r) {
-    return resetSupply(r);
+  async reset() {
+    return resetSupply();
   },
   async extra(r) {
     return extraSupply(r);
   },
 };
 
-export async function chainSupply(rule) {
+export async function readSupply(rule) {
   const m = METHODS[rule.method];
-  if (!m) throw new Error('no supply method ' + rule.method);
+  if (!m) throw new Error('unknown supply method ' + rule.method);
   return m(rule);
 }

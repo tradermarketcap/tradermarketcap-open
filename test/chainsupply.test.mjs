@@ -106,3 +106,19 @@ test('sui: a broken API answer fails the read', async () => {
   try { await assert.rejects(readSupply({ method: 'sui' }), /bad sui/); }
   finally { restore(); }
 });
+
+test('jupiter: circulating comes from Jupiter Token API and never exceeds total', async () => {
+  globalThis.fetch = async (url) => ({
+    ok: true, status: 200,
+    json: async () => [{ symbol: 'JUP', circSupply: 3319369204.37, totalSupply: 6861485633.51101 }],
+  });
+  const s = await readSupply({ method: 'jupiter', mint: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN' });
+  assert.equal(s.circulating, 3319369204.37);
+  assert.equal(s.total, 6861485633.51101);
+  assert.equal(s.checked, true);
+});
+
+test('jupiter: bad API payload fails the read', async () => {
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => [] });
+  await assert.rejects(readSupply({ method: 'jupiter', mint: 'x' }), /bad jupiter supply/);
+});

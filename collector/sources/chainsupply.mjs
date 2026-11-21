@@ -313,6 +313,17 @@ const METHODS = {
       excluded: [{ reason: 'Locked allocations (foundation, community reserve, early supporters)', amount: total - circ, src: 'https://blog.sui.io/token-release-schedule/' }],
       note: 'Total from Sui GraphQL; circulating from the official Sui Explorer circulation API (Sui JSON-RPC is deprecated). Stake rewards are circulating when paid' };
   },
+  // Jupiter's own Token API publishes circulating supply for its tokens, already net of
+  // locked team/community allocations and Jupiter Lock vesting escrows (see the JUP
+  // community audits on discuss.jup.ag for the wallet breakdown).
+  async jupiter(r) {
+    const url = `https://api.jup.ag/tokens/v2/search?query=${r.mint}`;
+    const d = (await getJSON(url))[0];
+    const circ = Number(d?.circSupply), total = Number(d?.totalSupply);
+    if (!(circ > 0) || !(total >= circ)) throw new Error('bad jupiter supply');
+    return { circulating: circ, total, src: url,
+      note: 'Jupiter Token API circSupply: locked team/community wallets and unvested Jupiter Lock escrows excluded by Jupiter' };
+  },
   async extra() {
     return extraSupply();
   },

@@ -61,3 +61,32 @@ test('bitget: an error answer (code not 00000) fails the read', async () => {
   await assert.rejects(READERS.bitget(), /code 40017/);
 });
 
+
+const upbitFixture = () => JSON.parse(readFileSync(new URL('./fixtures/upbit-tickers.json', import.meta.url), 'utf8'));
+const upbitMarkets = () => JSON.parse(readFileSync(new URL('./fixtures/upbit-markets.json', import.meta.url), 'utf8'));
+
+test('upbit: USDT-quoted pairs only, QUOTE-BASE market names', async () => {
+  const urls = [];
+  globalThis.fetch = async url => {
+    urls.push(String(url));
+    const body = String(url).includes('/v1/market/all') ? upbitMarkets() : upbitFixture();
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  const ms = await READERS.upbit();
+  assert.deepEqual(urls, ['https://api.upbit.com/v1/market/all', 'https://api.upbit.com/v1/ticker?markets=USDT-BTC,USDT-ETH']);
+  assert.ok(VENUES.upbit);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USDT', 'ETH/USDT']);
+  const btc = ms[0];
+  assert.equal(btc.venue, 'upbit');
+  assert.equal(btc.price, 60060.93);
+  assert.equal(btc.volBase, 25.39508369);
+  assert.equal(btc.volQuote, 1480913.05354522);
+  assert.ok(Math.abs(btc.change24h - 1.77572678) < 1e-9);
+  assert.equal(btc.api, 'https://api.upbit.com/v1/ticker?markets=USDT-BTC');
+  assert.equal(btc.trade, 'https://upbit.com/exchange?code=CRIX.UPBIT.USDT-BTC');
+});
+
+test('upbit: an empty market list fails the read', async () => {
+  globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('/v1/market/all') ? [] : []), { status: 200 });
+  await assert.rejects(READERS.upbit(), /no USDT markets/);
+});

@@ -23,6 +23,7 @@ export const VENUES = {
   binanceus: { name: 'Binance.US', type: 'Exchange', site: 'https://www.binance.us' },
   bybit: { name: 'Bybit', type: 'Exchange', site: 'https://www.bybit.com' },
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
+  upbit: { name: 'Upbit', type: 'Exchange', site: 'https://upbit.com' },
 };
 
 let krakenPairs = null, krakenPairsAt = 0;
@@ -176,6 +177,29 @@ export const READERS = {
         change24h: n(v.change24h) != null ? n(v.change24h) * 100 : null,
         api: `https://api.bitget.com/api/v2/spot/market/tickers?symbol=${v.symbol}`,
         trade: `https://www.bitget.com/spot/${b}${q}`,
+      });
+    }
+    return out;
+  },
+  // Upbit lists markets as QUOTE-BASE (USDT-BTC is BTC priced in USDT). Only the
+  // USDT-quoted pairs are kept; signed_change_rate is a fraction.
+  async upbit() {
+    // /v1/ticker requires an explicit markets list; /v1/market/all gives them all.
+    const all = await getJSON('https://api.upbit.com/v1/market/all', { timeout: 25000 });
+    const markets = (Array.isArray(all) ? all : []).map(m => m.market).filter(m => typeof m === 'string' && m.startsWith('USDT-'));
+    if (!markets.length) throw new Error('upbit no USDT markets');
+    const d = await getJSON(`https://api.upbit.com/v1/ticker?markets=${markets.join(',')}`, { timeout: 25000 });
+    if (!Array.isArray(d)) throw new Error('upbit bad response');
+    const out = [];
+    for (const v of d) {
+      const [q, b] = String(v.market).split('-');
+      if (q !== 'USDT' || !b) continue;
+      out.push({
+        venue: 'upbit', base: sym(b), quote: 'USDT', price: n(v.trade_price),
+        volBase: n(v.acc_trade_volume_24h), volQuote: n(v.acc_trade_price_24h),
+        change24h: n(v.signed_change_rate) != null ? n(v.signed_change_rate) * 100 : null,
+        api: `https://api.upbit.com/v1/ticker?markets=${v.market}`,
+        trade: `https://upbit.com/exchange?code=CRIX.UPBIT.${v.market}`,
       });
     }
     return out;

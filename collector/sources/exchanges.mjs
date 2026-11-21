@@ -25,9 +25,10 @@ export const VENUES = {
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
   cryptocom: { name: 'Crypto.com Exchange', type: 'Exchange', site: 'https://crypto.com/exchange' },
   upbit: { name: 'Upbit', type: 'Exchange', site: 'https://upbit.com' },
+  gemini: { name: 'Gemini', type: 'Exchange', site: 'https://exchange.gemini.com' },
 };
 
-let krakenPairs = null, krakenPairsAt = 0;
+let krakenPairs = null, krakenPairsAt = 0, geminiSymbols = null, geminiSymbolsAt = 0;
 
 export const READERS = {
   async coinbase() {
@@ -222,6 +223,47 @@ export const READERS = {
         trade: `https://upbit.com/exchange?code=CRIX.UPBIT.${v.market}`,
       });
     }
+    return out;
+  },
+  // Gemini has no bulk ticker: v1/symbols lists pairs, then each pair needs one
+  // v2/ticker call (OHLC + 24h change) and one v1/pubticker call (last + volume).
+  // Symbols are lowercase base+quote (btcusd, ethusdt); dead pairs are skipped,
+  // and the read fails if nothing comes back.
+  async gemini() {
+    if (!geminiSymbols || Date.now() - geminiSymbolsAt > 6 * 3600e3) {
+      geminiSymbols = (await getJSON('https://api.gemini.com/v1/symbols', { timeout: 25000 }))
+        .filter(s => /(?:usdc|usdt|usd)$/.test(s));
+      geminiSymbolsAt = Date.now();
+    }
+    const out = [];
+    for (let i = 0; i < geminiSymbols.length; i += 50) {
+      const rows = await Promise.all(geminiSymbols.slice(i, i + 50).map(async pair => {
+        let t2, t1;
+        try {
+          [t2, t1] = await Promise.all([
+            getJSON(`https://api.gemini.com/v2/ticker/${pair}`, { timeout: 20000 }),
+            getJSON(`https://api.gemini.com/v1/pubticker/${pair}`, { timeout: 20000 }),
+          ]);
+        } catch { return null; }
+        if (t2?.result === 'error' || t1?.result === 'error' || !t1?.last) return null;
+        let b = null, q = null;
+        for (const suffix of ['usdc', 'usdt', 'usd']) {
+          if (pair.endsWith(suffix) && pair.length > suffix.length) { b = pair.slice(0, -suffix.length).toUpperCase(); q = suffix.toUpperCase(); break; }
+        }
+        if (!keep(sym(b), q)) return null;
+        const price = n(t1.last), open = n(t2.open), close = n(t2.close);
+        const vol = t1.volume || {};
+        return {
+          venue: 'gemini', base: sym(b), quote: q, price,
+          volBase: n(vol[b]), volQuote: n(vol[q]),
+          change24h: open ? (close / open - 1) * 100 : null,
+          api: `https://api.gemini.com/v2/ticker/${pair}`,
+          trade: `https://exchange.gemini.com/trade/${pair.toUpperCase()}`,
+        };
+      }));
+      out.push(...rows.filter(Boolean));
+    }
+    if (!out.length) throw new Error('gemini no markets');
     return out;
   },
 };

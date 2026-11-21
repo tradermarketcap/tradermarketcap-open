@@ -17,6 +17,7 @@ function fakeFetch(body) {
 const bybitFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bybit-spot-tickers.json', import.meta.url), 'utf8'));
 const bitgetFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitget-spot-tickers.json', import.meta.url), 'utf8'));
 const cryptocomFixture = () => JSON.parse(readFileSync(new URL('./fixtures/cryptocom-tickers.json', import.meta.url), 'utf8'));
+const geminiSymbolsFixture = () => JSON.parse(readFileSync(new URL('./fixtures/gemini-symbols.json', import.meta.url), 'utf8'));
 
 test('bybit: USD-quoted spot pairs with volume, change and links', async () => {
   const urls = fakeFetch(bybitFixture());
@@ -112,4 +113,35 @@ test('upbit: USDT-quoted pairs only, QUOTE-BASE market names', async () => {
 test('upbit: an empty market list fails the read', async () => {
   globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('/v1/market/all') ? [] : []), { status: 200 });
   await assert.rejects(READERS.upbit(), /no USDT markets/);
+});
+
+test('gemini: USD-quoted pairs with volume, change and links', async () => {
+  const urls = [];
+  const ticker = JSON.parse(readFileSync(new URL('./fixtures/gemini-ticker-btcusd.json', import.meta.url), 'utf8'));
+  globalThis.fetch = async url => {
+    const u = String(url); urls.push(u);
+    let body;
+    if (u === 'https://api.gemini.com/v1/symbols') body = geminiSymbolsFixture();
+    else if (u.includes('/v2/ticker/')) body = ticker.v2;
+    else if (u.includes('/v1/pubticker/')) body = ticker.v1;
+    else throw new Error('unexpected url ' + u);
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  const ms = await READERS.gemini();
+  assert.ok(urls[0] === 'https://api.gemini.com/v1/symbols');
+  assert.ok(VENUES.gemini);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'ETH/USDT', 'SOL/USDC']);
+  const btc = ms[0];
+  assert.equal(btc.venue, 'gemini');
+  assert.equal(btc.price, 59823.09);
+  assert.equal(btc.volBase, 763.32);
+  assert.equal(btc.volQuote, 45664340.97);
+  assert.ok(Math.abs(btc.change24h - (59867.49 / 59000 - 1) * 100) < 1e-9);
+  assert.equal(btc.api, 'https://api.gemini.com/v2/ticker/btcusd');
+  assert.equal(btc.trade, 'https://exchange.gemini.com/trade/BTCUSD');
+});
+
+test('gemini: an empty symbol list fails the read', async () => {
+  fakeFetch([]);
+  await assert.rejects(READERS.gemini(), /no markets/);
 });

@@ -17,6 +17,7 @@ function fakeFetch(body) {
 const bybitFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bybit-spot-tickers.json', import.meta.url), 'utf8'));
 const bitgetFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitget-spot-tickers.json', import.meta.url), 'utf8'));
 const cryptocomFixture = () => JSON.parse(readFileSync(new URL('./fixtures/cryptocom-tickers.json', import.meta.url), 'utf8'));
+const bithumbFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bithumb-tickers-krw.json', import.meta.url), 'utf8'));
 
 test('bybit: USD-quoted spot pairs with volume, change and links', async () => {
   const urls = fakeFetch(bybitFixture());
@@ -112,4 +113,34 @@ test('upbit: USDT-quoted pairs only, QUOTE-BASE market names', async () => {
 test('upbit: an empty market list fails the read', async () => {
   globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('/v1/market/all') ? [] : []), { status: 200 });
   await assert.rejects(READERS.upbit(), /no USDT markets/);
+});
+
+test('bithumb: KRW tickers converted to USD via USDT-KRW, with volume, change and links', async () => {
+  const urls = fakeFetch(bithumbFixture());
+  const ms = await READERS.bithumb();
+  assert.deepEqual(urls, ['https://api.bithumb.com/public/ticker/ALL_KRW']);
+  assert.ok(VENUES.bithumb);
+  const btc = ms.find(m => m.base === 'BTC');
+  assert.equal(btc.venue, 'bithumb');
+  assert.equal(btc.quote, 'USD');
+  assert.ok(Math.abs(btc.price - 82009000 / 1368) < 1e-6);
+  assert.equal(btc.volBase, 1883.70602528);
+  assert.ok(Math.abs(btc.volQuote - 150596349693.27003 / 1368) < 1e-3);
+  assert.equal(btc.change24h, 0.31);
+  assert.equal(btc.api, 'https://api.bithumb.com/public/ticker/BTC_KRW');
+  assert.equal(btc.trade, 'https://www.bithumb.com/react/trade/order/BTC-KRW');
+  // USDT is the conversion rate, not a market; it must not emit a USDT/USD row pinned at ~1.
+  assert.ok(ms.every(m => m.base !== 'USDT'));
+});
+
+test('bithumb: a missing USDT-KRW price fails the read', async () => {
+  const f = bithumbFixture();
+  delete f.data.USDT;
+  fakeFetch(f);
+  await assert.rejects(READERS.bithumb(), /USDT-KRW/);
+});
+
+test('bithumb: an error answer (status not 0000) fails the read', async () => {
+  fakeFetch({ status: '0001', data: {} });
+  await assert.rejects(READERS.bithumb(), /status 0001/);
 });

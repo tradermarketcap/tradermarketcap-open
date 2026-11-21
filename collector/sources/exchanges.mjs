@@ -239,12 +239,15 @@ export const READERS = {
     for (let i = 0; i < geminiSymbols.length; i += 50) {
       const rows = await Promise.all(geminiSymbols.slice(i, i + 50).map(async pair => {
         let t2, t1;
-        try {
-          [t2, t1] = await Promise.all([
-            getJSON(`https://api.gemini.com/v2/ticker/${pair}`, { timeout: 20000 }),
-            getJSON(`https://api.gemini.com/v1/pubticker/${pair}`, { timeout: 20000 }),
-          ]);
-        } catch { return null; }
+        for (let attempt = 0; attempt < 2 && !(t2 && t1); attempt++) {
+          try {
+            [t2, t1] = await Promise.all([
+              getJSON(`https://api.gemini.com/v2/ticker/${pair}`, { timeout: 20000 }),
+              getJSON(`https://api.gemini.com/v1/pubticker/${pair}`, { timeout: 20000 }),
+            ]);
+          } catch { t2 = t1 = null; }
+        }
+        if (!(t2 && t1)) return null;
         if (t2?.result === 'error' || t1?.result === 'error' || !t1?.last) return null;
         let b = null, q = null;
         for (const suffix of ['usdc', 'usdt', 'usd']) {

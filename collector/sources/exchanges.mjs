@@ -23,6 +23,7 @@ export const VENUES = {
   binanceus: { name: 'Binance.US', type: 'Exchange', site: 'https://www.binance.us' },
   bybit: { name: 'Bybit', type: 'Exchange', site: 'https://www.bybit.com' },
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
+  cryptocom: { name: 'Crypto.com Exchange', type: 'Exchange', site: 'https://crypto.com/exchange' },
 };
 
 let krakenPairs = null, krakenPairsAt = 0;
@@ -176,6 +177,25 @@ export const READERS = {
         change24h: n(v.change24h) != null ? n(v.change24h) * 100 : null,
         api: `https://api.bitget.com/api/v2/spot/market/tickers?symbol=${v.symbol}`,
         trade: `https://www.bitget.com/spot/${b}${q}`,
+      });
+    }
+    return out;
+  },
+  // Crypto.com answers HTTP 200 even on errors, so check code. Spot instruments are
+  // BASE_QUOTE; derivatives (e.g. BTCUSD-PERP) have no "_" and are skipped by the split.
+  // `c` is a fraction (0.005 = 0.5%).
+  async cryptocom() {
+    const d = await getJSON('https://api.crypto.com/exchange/v1/public/get-tickers', { timeout: 25000 });
+    if (d.code !== 0) throw new Error(`cryptocom code ${d.code}`);
+    const out = [];
+    for (const v of d.result?.data || []) {
+      const [b, q] = String(v.i).split('_');
+      if (!keep(b, q)) continue;
+      out.push({
+        venue: 'cryptocom', base: b, quote: q, price: n(v.a), volBase: n(v.v), volQuote: n(v.vv),
+        change24h: n(v.c) != null ? n(v.c) * 100 : null,
+        api: `https://api.crypto.com/exchange/v1/public/get-tickers?instrument_name=${v.i}`,
+        trade: `https://crypto.com/exchange/trade/${String(v.i).toLowerCase()}`,
       });
     }
     return out;

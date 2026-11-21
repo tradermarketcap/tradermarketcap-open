@@ -16,6 +16,7 @@ function fakeFetch(body) {
 
 const bybitFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bybit-spot-tickers.json', import.meta.url), 'utf8'));
 const bitgetFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitget-spot-tickers.json', import.meta.url), 'utf8'));
+const cryptocomFixture = () => JSON.parse(readFileSync(new URL('./fixtures/cryptocom-tickers.json', import.meta.url), 'utf8'));
 
 test('bybit: USD-quoted spot pairs with volume, change and links', async () => {
   const urls = fakeFetch(bybitFixture());
@@ -61,3 +62,25 @@ test('bitget: an error answer (code not 00000) fails the read', async () => {
   await assert.rejects(READERS.bitget(), /code 40017/);
 });
 
+
+test('cryptocom: USD-quoted spot pairs with volume, change and links', async () => {
+  const urls = fakeFetch(cryptocomFixture());
+  const ms = await READERS.cryptocom();
+  assert.deepEqual(urls, ['https://api.crypto.com/exchange/v1/public/get-tickers']);
+  assert.ok(VENUES.cryptocom);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USDT', 'ETH/USDC']);
+  const btc = ms[0];
+  assert.equal(btc.venue, 'cryptocom');
+  assert.equal(btc.price, 59969.17);
+  assert.equal(btc.volBase, 6051.3088);
+  assert.equal(btc.volQuote, 352287263.51);
+  assert.ok(Math.abs(btc.change24h - 0.5) < 1e-9);
+  assert.equal(btc.api, 'https://api.crypto.com/exchange/v1/public/get-tickers?instrument_name=BTC_USDT');
+  assert.equal(btc.trade, 'https://crypto.com/exchange/trade/btc_usdt');
+  assert.ok(ms[1].change24h < 0);
+});
+
+test('cryptocom: an error answer (code not 0) fails the read', async () => {
+  fakeFetch({ id: 1, method: 'public/get-tickers', code: 40001, result: {} });
+  await assert.rejects(READERS.cryptocom(), /code 40001/);
+});

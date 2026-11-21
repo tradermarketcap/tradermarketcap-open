@@ -269,6 +269,20 @@ const METHODS = {
   async reset() {
     return resetSupply();
   },
+  // Sui: the Sui Foundation publishes circulating supply through the Sui Explorer
+  // API (sui-circulation.suiexplorer.com, linked from blog.sui.io/token-release-schedule).
+  // It already nets out the locked foundation/community/early-supporter allocations
+  // that unlock on the published release schedule; stake rewards count as circulating
+  // the moment they are paid (docs.sui.io tokenomics). Cap is 10B SUI.
+  async sui() {
+    const url = 'https://sui-circulation.suiexplorer.com/api/current_sui_circulation_number';
+    const circ = Number(await getJSON(url));
+    if (!(circ > 0)) throw new Error('bad sui circulation');
+    const total = 10_000_000_000;
+    return { circulating: circ, total, src: url,
+      excluded: [{ reason: 'Locked allocations (foundation, community reserve, early supporters)', amount: total - circ, src: 'https://blog.sui.io/token-release-schedule/' }],
+      note: 'Sui Explorer official circulating-supply API; stake rewards are circulating when paid' };
+  },
   async extra() {
     return extraSupply();
   },

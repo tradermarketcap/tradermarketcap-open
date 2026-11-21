@@ -275,13 +275,23 @@ const METHODS = {
   // that unlock on the published release schedule; stake rewards count as circulating
   // the moment they are paid (docs.sui.io tokenomics). Cap is 10B SUI.
   async sui() {
+    // Sui's public JSON-RPC is deprecated network-wide, so total supply is read from the official
+    // GraphQL endpoint; the circulating figure comes from the Sui Explorer circulation API, the
+    // only public source for the locked-allocation remainder.
+    const gql = await getJSON('https://graphql.mainnet.sui.io/graphql', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: '{ coinMetadata(coinType: "0x2::sui::SUI") { decimals supply } }' }),
+    });
+    const meta = gql?.data?.coinMetadata;
+    if (!meta?.supply) throw new Error('bad sui supply metadata');
+    const total = Number(BigInt(meta.supply)) / 10 ** meta.decimals;
+    if (!(total > 0)) throw new Error('bad sui total supply ' + total);
     const url = 'https://sui-circulation.suiexplorer.com/api/current_sui_circulation_number';
     const circ = Number(await getJSON(url));
-    if (!(circ > 0)) throw new Error('bad sui circulation');
-    const total = 10_000_000_000;
+    if (!(circ > 0) || circ > total) throw new Error('bad sui circulation');
     return { circulating: circ, total, src: url,
       excluded: [{ reason: 'Locked allocations (foundation, community reserve, early supporters)', amount: total - circ, src: 'https://blog.sui.io/token-release-schedule/' }],
-      note: 'Sui Explorer official circulating-supply API; stake rewards are circulating when paid' };
+      note: 'Total from Sui GraphQL; circulating from the official Sui Explorer circulation API (Sui JSON-RPC is deprecated). Stake rewards are circulating when paid' };
   },
   async extra() {
     return extraSupply();

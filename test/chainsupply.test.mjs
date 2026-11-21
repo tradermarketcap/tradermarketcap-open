@@ -48,12 +48,23 @@ test('bnb: a broken tracker fails the read instead of guessing', async () => {
   await assert.rejects(readSupply({ method: 'bnb' }), /tracker/);
 });
 
-test('sui: circulating comes from the official Sui Explorer API and locked remainder is excluded', async () => {
+// Fake Sui endpoints: GraphQL returns the given total (in mist), the Explorer circulation API
+// returns the given circulating figure. Response shapes captured 2026-11-21.
+function fakeSui({ totalMist = '10000000000000000000', circ = 4139043544.1303763 } = {}) {
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async url => {
-    assert.ok(String(url).includes('sui-circulation.suiexplorer.com'));
-    return { ok: true, status: 200, json: async () => 4139043544.1303763 };
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('graphql.mainnet.sui.io')) {
+      return { ok: true, status: 200, json: async () => ({ data: { coinMetadata: { decimals: 9, supply: totalMist } } }) };
+    }
+    assert.ok(u.includes('sui-circulation.suiexplorer.com'));
+    return { ok: true, status: 200, json: async () => circ };
   };
+  return () => { globalThis.fetch = realFetch; };
+}
+
+test('sui: total comes from Sui GraphQL, circulating from the Explorer API, locked remainder excluded', async () => {
+  const restore = fakeSui();
   try {
     const s = await readSupply({ method: 'sui', max: 10000000000 });
     assert.equal(s.circulating, 4139043544.1303763);
@@ -61,12 +72,11 @@ test('sui: circulating comes from the official Sui Explorer API and locked remai
     assert.equal(s.excluded.length, 1);
     assert.ok(Math.abs(s.excluded[0].amount - (10000000000 - 4139043544.1303763)) < 0.01);
     assert.equal(s.checked, true);
-  } finally { globalThis.fetch = realFetch; }
+  } finally { restore(); }
 });
 
 test('sui: a broken API answer fails the read', async () => {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => 0 });
+  const restore = fakeSui({ circ: 0 });
   try { await assert.rejects(readSupply({ method: 'sui' }), /bad sui/); }
-  finally { globalThis.fetch = realFetch; }
+  finally { restore(); }
 });

@@ -319,9 +319,11 @@ const METHODS = {
   async jupiter(r) {
     const url = `https://api.jup.ag/tokens/v2/search?query=${r.mint}`;
     const d = (await getJSON(url))[0];
+    if (d?.id !== r.mint) throw new Error('jupiter: mint mismatch');
     const circ = Number(d?.circSupply), total = Number(d?.totalSupply);
     if (!(circ > 0) || !(total >= circ)) throw new Error('bad jupiter supply');
     return { circulating: circ, total, src: url,
+      excluded: [{ reason: 'Locked team/community allocations and Jupiter Lock vesting escrows', amount: total - circ, src: 'https://discuss.jup.ag/t/jup-community-audit-feb-2025/34764' }],
       note: 'Jupiter Token API circSupply: locked team/community wallets and unvested Jupiter Lock escrows excluded by Jupiter' };
   },
   async extra() {

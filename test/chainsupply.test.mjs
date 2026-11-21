@@ -47,3 +47,29 @@ test('bnb: a broken tracker fails the read instead of guessing', async () => {
   fakeChain({ bcSupply: 0, bscSupply: 90000000 });
   await assert.rejects(readSupply({ method: 'bnb' }), /tracker/);
 });
+
+test('chainlink: reads official supply and non-circulating wallets', async () => {
+  const total = 1000000000n * 10n ** 18n;
+  const excluded = 50000000n * 10n ** 18n;
+  const circ = total - excluded;
+  globalThis.fetch = async url => {
+    assert.ok(String(url).includes('supply.chain.link'));
+    return { ok: true, status: 200, json: async () => ({
+      totalSupply: total.toString(), circulatingSupply: circ.toString(),
+      balances: [{ address: '0xabc', balance: excluded.toString() }, { address: '0xzero', balance: '0' }],
+    }) };
+  };
+  const s = await readSupply({ method: 'chainlink' });
+  assert.equal(s.total, 1000000000);
+  assert.equal(s.circulating, 950000000);
+  assert.equal(s.excluded.length, 1);
+  assert.equal(s.excluded[0].amount, 50000000);
+  assert.equal(s.checked, true);
+});
+
+test('chainlink: a supply that does not reconcile fails the read', async () => {
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({
+    totalSupply: (1000n * 10n ** 18n).toString(), circulatingSupply: (900n * 10n ** 18n).toString(), balances: [],
+  }) });
+  await assert.rejects(readSupply({ method: 'chainlink' }), /reconcile/);
+});

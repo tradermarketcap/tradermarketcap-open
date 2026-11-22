@@ -17,6 +17,7 @@ function fakeFetch(body) {
 const bybitFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bybit-spot-tickers.json', import.meta.url), 'utf8'));
 const bitgetFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitget-spot-tickers.json', import.meta.url), 'utf8'));
 const geminiFeedFixture = () => JSON.parse(readFileSync(new URL('./fixtures/gemini-pricefeed.json', import.meta.url), 'utf8'));
+const cryptocomFixture = () => JSON.parse(readFileSync(new URL('./fixtures/cryptocom-tickers.json', import.meta.url), 'utf8'));
 
 test('bybit: USD-quoted spot pairs with volume, change and links', async () => {
   const urls = fakeFetch(bybitFixture());
@@ -62,6 +63,58 @@ test('bitget: an error answer (code not 00000) fails the read', async () => {
   await assert.rejects(READERS.bitget(), /code 40017/);
 });
 
+
+test('cryptocom: USD-quoted spot pairs with volume, change and links', async () => {
+  const urls = fakeFetch(cryptocomFixture());
+  const ms = await READERS.cryptocom();
+  assert.deepEqual(urls, ['https://api.crypto.com/exchange/v1/public/get-tickers']);
+  assert.ok(VENUES.cryptocom);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USDT', 'ETH/USDC']);
+  const btc = ms[0];
+  assert.equal(btc.venue, 'cryptocom');
+  assert.equal(btc.price, 59969.17);
+  assert.equal(btc.volBase, 6051.3088);
+  assert.equal(btc.volQuote, 352287263.51);
+  assert.ok(Math.abs(btc.change24h - 0.5) < 1e-9);
+  assert.equal(btc.api, 'https://api.crypto.com/exchange/v1/public/get-tickers?instrument_name=BTC_USDT');
+  assert.equal(btc.trade, 'https://crypto.com/exchange/trade/btc_usdt');
+  assert.ok(ms[1].change24h < 0);
+});
+
+test('cryptocom: an error answer (code not 0) fails the read', async () => {
+  fakeFetch({ id: 1, method: 'public/get-tickers', code: 40001, result: {} });
+  await assert.rejects(READERS.cryptocom(), /code 40001/);
+});
+
+const upbitFixture = () => JSON.parse(readFileSync(new URL('./fixtures/upbit-tickers.json', import.meta.url), 'utf8'));
+const upbitMarkets = () => JSON.parse(readFileSync(new URL('./fixtures/upbit-markets.json', import.meta.url), 'utf8'));
+
+test('upbit: USDT-quoted pairs only, QUOTE-BASE market names', async () => {
+  const urls = [];
+  globalThis.fetch = async url => {
+    urls.push(String(url));
+    const body = String(url).includes('/v1/market/all') ? upbitMarkets() : upbitFixture();
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  const ms = await READERS.upbit();
+  assert.deepEqual(urls, ['https://api.upbit.com/v1/market/all', 'https://api.upbit.com/v1/ticker?markets=USDT-BTC,USDT-ETH']);
+  assert.ok(VENUES.upbit);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USDT', 'ETH/USDT']);
+  const btc = ms[0];
+  assert.equal(btc.venue, 'upbit');
+  assert.equal(btc.price, 60060.93);
+  assert.equal(btc.volBase, 25.39508369);
+  assert.equal(btc.volQuote, 1480913.05354522);
+  assert.ok(Math.abs(btc.change24h - 1.77572678) < 1e-9);
+  assert.equal(btc.api, 'https://api.upbit.com/v1/ticker?markets=USDT-BTC');
+  assert.equal(btc.trade, 'https://upbit.com/exchange?code=CRIX.UPBIT.USDT-BTC');
+});
+
+test('upbit: an empty market list fails the read', async () => {
+  globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('/v1/market/all') ? [] : []), { status: 200 });
+  await assert.rejects(READERS.upbit(), /no USDT markets/);
+});
+
 // Gemini answers v1/pricefeed with [{pair, price, percentChange24h}] and v1/pubticker per symbol
 // with {last, volume: {BASE: .., QUOTE: ..}}. The stablecoin pairs are the trap: their names end in
 // "USD", so a naive suffix match turns SOLRLUSD into base "SOLRL" and BTCGUSD into "BTCG".
@@ -90,4 +143,3 @@ test('gemini: a non-list answer fails the read instead of reporting no markets',
   fakeFetch({ result: 'error', reason: 'RateLimit' });
   await assert.rejects(READERS.gemini(), /bad response/);
 });
-

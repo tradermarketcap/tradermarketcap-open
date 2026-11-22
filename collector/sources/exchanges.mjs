@@ -236,16 +236,22 @@ export const READERS = {
       if (!Array.isArray(v) || typeof v[0] !== 'string' || !v[0].startsWith('t')) continue;
       const body = v[0].slice(1);
       let b = null, q = null, rawQ = null;
-      for (const [suffix, quote] of [['USDC', 'USDC'], ['UST', 'USDT'], ['USD', 'USD']]) {
-        if (body.endsWith(suffix) && body.length > suffix.length) { b = body.slice(0, -suffix.length); q = quote; rawQ = suffix; break; }
+      if (body.includes(':')) {
+        const i = body.indexOf(':');
+        b = body.slice(0, i); rawQ = body.slice(i + 1);
+        q = rawQ === 'UST' ? 'USDT' : rawQ;
+      } else {
+        for (const [suffix, quote] of [['USDT', 'USDT'], ['USDC', 'USDC'], ['UST', 'USDT'], ['USD', 'USD']]) {
+          if (body.endsWith(suffix) && body.length > suffix.length) { b = body.slice(0, -suffix.length); q = quote; rawQ = suffix; break; }
+        }
       }
-      if (!keep(sym(b), q)) continue;
+      if (!keep(b, q) || /TEST/.test(b) || /TEST/.test(rawQ)) continue;
       const price = n(v[7]), volBase = n(v[8]);
       out.push({
         venue: 'bitfinex', base: sym(b), quote: q, price, volBase, volQuote: volBase != null && price != null ? volBase * price : null,
         change24h: n(v[6]) != null ? n(v[6]) * 100 : null,
-        api: `https://api-pub.bitfinex.com/v2/tickers/${v[0]}`,
-        trade: `https://www.bitfinex.com/t/${b}${rawQ}`,
+        api: `https://api-pub.bitfinex.com/v2/tickers?symbols=${v[0]}`,
+        trade: `https://trading.bitfinex.com/t/${b}:${rawQ}`,
       });
     }
     return out;

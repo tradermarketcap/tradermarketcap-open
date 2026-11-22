@@ -120,17 +120,19 @@ test('bitfinex: USD/UST spot pairs with volume, change and links', async () => {
   const ms = await READERS.bitfinex();
   assert.deepEqual(urls, ['https://api-pub.bitfinex.com/v2/tickers?symbols=ALL']);
   assert.ok(VENUES.bitfinex);
-  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'BTC/USDT', 'ETH/USD']);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'BTC/USDT', 'ETH/USD', 'XAUT/USD', 'LINK/USDT']);
   const btc = ms[0];
   assert.equal(btc.venue, 'bitfinex');
   assert.equal(btc.price, 60025);
   assert.equal(btc.volBase, 5425.86990936);
   assert.ok(Math.abs(btc.volQuote - 5425.86990936 * 60025) < 1e-6);
   assert.ok(Math.abs(btc.change24h - 0.242151) < 1e-9);
-  assert.equal(btc.api, 'https://api-pub.bitfinex.com/v2/tickers/tBTCUSD');
-  assert.equal(btc.trade, 'https://www.bitfinex.com/t/BTCUSD');
-  assert.equal(ms[1].api, 'https://api-pub.bitfinex.com/v2/tickers/tBTCUST');
-  assert.equal(ms[1].trade, 'https://www.bitfinex.com/t/BTCUST');
+  assert.equal(btc.api, 'https://api-pub.bitfinex.com/v2/tickers?symbols=tBTCUSD');
+  assert.equal(btc.trade, 'https://trading.bitfinex.com/t/BTC:USD');
+  assert.equal(ms[1].api, 'https://api-pub.bitfinex.com/v2/tickers?symbols=tBTCUST');
+  assert.equal(ms[1].trade, 'https://trading.bitfinex.com/t/BTC:UST');
+  assert.equal(ms[3].api, 'https://api-pub.bitfinex.com/v2/tickers?symbols=tXAUT:USD');
+  assert.equal(ms[3].trade, 'https://trading.bitfinex.com/t/XAUT:USD');
 });
 
 test('bitfinex: a non-array error answer fails the read', async () => {

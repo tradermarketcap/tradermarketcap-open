@@ -106,3 +106,111 @@ test('sui: a broken API answer fails the read', async () => {
   try { await assert.rejects(readSupply({ method: 'sui' }), /bad sui/); }
   finally { restore(); }
 });
+
+// TON. Response shapes captured from tonapi.io and toncenter.com on 2026-11-22. Config param 44 is the
+// on-chain suspended_address_list: the accounts frozen until `suspended_until` (unix seconds).
+const TON_LOCKER = 'EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2';
+const TON_FROZEN = ['0:00ed1c8d25c4774e0ef3fc1c176fcd5e3c3beb2f2b506a73bad9303aea648313', '0:0769ffdea3d8261cb8844691f963979baffcf8a57e0dcac0263cc7076bd4976a'];
+const TON_FROZEN_NANO = { [TON_FROZEN[0]]: '1000368958873', [TON_FROZEN[1]]: '2400000000000' };
+
+// Fake chain: masterchain head + one shard, the Locker balance, config param 44 and the bulk balance read.
+// `bulkFor(body)` can override the bulk answer to simulate a broken balance read.
+function fakeTon({ seqno = 107059551, mcGrams = '2520961419649332862', shardGrams = '2767229266373100000',
+  lockerNano = '1240902290670000000', accounts = TON_FROZEN, until = 1803189600, bulkFor = null } = {}) {
+  const prevFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    const reply = body => ({ ok: true, status: 200, json: async () => body });
+    seen.push(u);
+    if (u.endsWith('/v2/blockchain/masterchain-head')) return reply({ seqno, value_flow: { to_next_blk: { grams: mcGrams } } });
+    if (u.endsWith(`/v2/blockchain/masterchain/${seqno}/shards`)) return reply({ shards: [{ last_known_block: { value_flow: { to_next_blk: { grams: shardGrams } } } }] });
+    if (u.endsWith('/v2/blockchain/config')) return reply({ '44': { accounts, suspended_until: until } });
+    if (u.includes('toncenter.com/api/v2/getAddressBalance')) return reply({ ok: true, result: lockerNano });
+    if (u.includes('tonapi.io/v2/accounts/_bulk')) {
+      const { account_ids: ids } = JSON.parse(opts.body);
+      if (bulkFor) return reply(bulkFor(ids));
+      return reply({ accounts: ids.map(a => ({ address: a, balance: TON_FROZEN_NANO[a] })) });
+    }
+    throw new Error('unexpected url ' + u);
+  };
+  return () => { globalThis.fetch = prevFetch; };
+}
+
+const TON_TOTAL = (Number(2520961419649332862n) + Number(2767229266373100000n)) / 1e9;
+const TON_LOCKER_TON = Number(1240902290670000000n) / 1e9;
+const TON_FROZEN_TON = (1000368958873 + 2400000000000) / 1e9;
+
+test('ton: frozen early-miner balances are read from config param 44, not hardcoded', async () => {
+  const restore = fakeTon();
+  try {
+    const s = await readSupply({ method: 'ton' });
+    assert.ok(Math.abs(s.total - TON_TOTAL) < 0.01, 'total is masterchain plus shard value_flow');
+    const frozen = s.excluded.find(e => /frozen/i.test(e.reason));
+    assert.ok(frozen, 'the frozen wallets are listed as excluded');
+    assert.ok(Math.abs(frozen.amount - TON_FROZEN_TON) < 1e-6, 'frozen amount is the live sum of the listed accounts');
+    assert.match(frozen.reason, /^2 early-miner wallets frozen until 2027-02-21/, 'the reason names the real account count and end date');
+    const locker = s.excluded.find(e => /Believers/i.test(e.reason));
+    assert.ok(Math.abs(locker.amount - TON_LOCKER_TON) < 1e-6);
+    assert.ok(Math.abs(s.circulating - (TON_TOTAL - TON_LOCKER_TON - TON_FROZEN_TON)) < 1e-6);
+    assert.equal(s.checked, true);
+    assert.equal(s.method, 'ton');
+  } finally { restore(); }
+});
+
+test('ton: the frozen total follows the chain, so a different balance read moves circulating', async () => {
+  const restore = fakeTon({
+    accounts: [TON_FROZEN[0]],
+    bulkFor: ids => ({ accounts: ids.map(a => ({ address: a, balance: '5000000000000' })) }),
+  });
+  try {
+    const s = await readSupply({ method: 'ton' });
+    const frozen = s.excluded.find(e => /frozen/i.test(e.reason));
+    assert.equal(frozen.amount, 5000);
+    assert.match(frozen.reason, /^1 early-miner wallet frozen/);
+    assert.ok(Math.abs(s.circulating - (TON_TOTAL - TON_LOCKER_TON - 5000)) < 1e-6);
+  } finally { restore(); }
+});
+
+test('ton: a failed balance read fails the whole supply read', async () => {
+  const restore = fakeTon({ bulkFor: ids => ({ accounts: ids.map(a => ({ address: a, balance: null })) }) });
+  try { await assert.rejects(readSupply({ method: 'ton' }), /bad TON frozen balance/); }
+  finally { restore(); }
+});
+
+test('ton: a short bulk answer (a dropped account) fails instead of summing a partial list', async () => {
+  const restore = fakeTon({ bulkFor: ids => ({ accounts: ids.slice(0, 1).map(a => ({ address: a, balance: '1' })) }) });
+  try { await assert.rejects(readSupply({ method: 'ton' }), /bad TON frozen balance read/); }
+  finally { restore(); }
+});
+
+test('ton: after the freeze ends the wallets are not excluded', async () => {
+  const restore = fakeTon({ until: 1000 }); // a date in the past
+  try {
+    const s = await readSupply({ method: 'ton' });
+    assert.equal(s.excluded.find(e => /frozen/i.test(e.reason)), undefined);
+    assert.ok(Math.abs(s.circulating - (TON_TOTAL - TON_LOCKER_TON)) < 1e-6);
+  } finally { restore(); }
+});
+
+test('ton: a rule cannot type in a frozen-miner number', async () => {
+  const restore = fakeTon();
+  try {
+    const s = await readSupply({ method: 'ton', frozenMiners: 1 });
+    assert.ok(Math.abs(s.excluded.find(e => /frozen/i.test(e.reason)).amount - TON_FROZEN_TON) < 1e-6);
+  } finally { restore(); }
+});
+
+test('ton: broken masterchain, shard or param 44 reads fail the read', async () => {
+  let restore = fakeTon({ mcGrams: null });
+  try { await assert.rejects(readSupply({ method: 'ton' }), /masterchain head/); }
+  finally { restore(); }
+
+  restore = fakeTon({ shardGrams: null });
+  try { await assert.rejects(readSupply({ method: 'ton' }), /shard value_flow/); }
+  finally { restore(); }
+
+  restore = fakeTon({ accounts: [] });
+  try { await assert.rejects(readSupply({ method: 'ton' }), /config param 44/); }
+  finally { restore(); }
+});

@@ -313,6 +313,76 @@ const METHODS = {
       excluded: [{ reason: 'Locked allocations (foundation, community reserve, early supporters)', amount: total - circ, src: 'https://blog.sui.io/token-release-schedule/' }],
       note: 'Total from Sui GraphQL; circulating from the official Sui Explorer circulation API (Sui JSON-RPC is deprecated). Stake rewards are circulating when paid' };
   },
+  // TON: total supply is the sum of nanoTON carried by the masterchain head and each active workchain
+  // shard block, read from TonAPI (tonapi.io), which indexes the chain itself. Two groups are not circulating:
+  // 1) The TON Believers Fund (the "Locker" contract), read live from toncenter.com.
+  // 2) Early-miner wallets frozen by the Feb 2023 tokenomics vote. The frozen list is on-chain state, not a
+  //    constant: config param 44 (suspended_address_list) names the accounts and the date the freeze ends. We
+  //    read that list, sum every balance live, and exclude the wallets only while the freeze is still running.
+  async ton() {
+    const mc = await getJSON('https://tonapi.io/v2/blockchain/masterchain-head');
+    const mcGrams = mc?.value_flow?.to_next_blk?.grams;
+    if (!mc?.seqno || mcGrams == null) throw new Error('bad TON masterchain head');
+    const sh = await getJSON(`https://tonapi.io/v2/blockchain/masterchain/${mc.seqno}/shards`);
+    if (!Array.isArray(sh?.shards) || sh.shards.length === 0) throw new Error('bad TON masterchain shards');
+    let totalNano = BigInt(mcGrams);
+    for (const s of sh.shards) {
+      const g = s?.last_known_block?.value_flow?.to_next_blk?.grams;
+      if (g == null) throw new Error('bad TON shard value_flow');
+      totalNano += BigInt(g);
+    }
+    const total = Number(totalNano) / 1e9;
+    if (!(total > 5e9)) throw new Error('bad TON total supply ' + total);
+
+    const lockerAddr = 'EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2';
+    const lockerRes = await getJSON(`https://toncenter.com/api/v2/getAddressBalance?address=${lockerAddr}`);
+    if (!lockerRes?.ok || !lockerRes?.result) throw new Error('bad TON locker balance');
+    const lockerTon = Number(BigInt(lockerRes.result)) / 1e9;
+    if (!(lockerTon > 0)) throw new Error('zero TON locker balance');
+    const excluded = [{
+      reason: 'TON Believers Fund (The Locker smart contract)',
+      holder: lockerAddr,
+      amount: lockerTon,
+      src: `https://tonviewer.com/${lockerAddr}`,
+    }];
+
+    const cfg = await getJSON('https://tonapi.io/v2/blockchain/config');
+    const frozen = cfg?.['44'];
+    const accounts = frozen?.accounts;
+    const until = Number(frozen?.suspended_until);
+    if (!Array.isArray(accounts) || accounts.length === 0 || !(until > 0)) throw new Error('bad TON config param 44');
+    // The freeze is temporary: after suspended_until those wallets hold ordinary spendable TON.
+    if (Date.now() / 1000 < until) {
+      let frozenNano = 0n;
+      for (let i = 0; i < accounts.length; i += 100) {
+        const batch = accounts.slice(i, i + 100);
+        const res = await getJSON('https://tonapi.io/v2/accounts/_bulk', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ account_ids: batch }),
+        });
+        if (!Array.isArray(res?.accounts) || res.accounts.length !== batch.length) throw new Error('bad TON frozen balance read');
+        for (const a of res.accounts) {
+          const b = a?.balance;
+          if (b == null || !/^\d+$/.test(String(b))) throw new Error('bad TON frozen balance for ' + a?.address);
+          frozenNano += BigInt(b);
+        }
+      }
+      excluded.push({
+        reason: `${accounts.length} early-miner wallet${accounts.length === 1 ? '' : 's'} frozen until ${new Date(until * 1000).toISOString().slice(0, 10)} by the Feb 2023 tokenomics vote`,
+        holder: `${accounts.length} frozen early-miner wallets (config param 44)`,
+        amount: Number(frozenNano / 10n ** 3n) / 1e6,
+        src: 'https://ton.vote/EQCb8dxevgHhBnsTodJKXaCrafplHzEf1V2Adj0GVlhA5xI4',
+      });
+    }
+    const out = excluded.reduce((s, e) => s + e.amount, 0);
+    return {
+      circulating: total - out,
+      total,
+      src: 'https://tonapi.io',
+      excluded,
+      note: 'Total TON summed from the masterchain head and shard blocks (tonapi.io); excludes the TON Believers Fund locker, read live, and the early-miner wallets on-chain config param 44 lists as frozen until Feb 2027',
+    };
+  },
   async extra() {
     return extraSupply();
   },

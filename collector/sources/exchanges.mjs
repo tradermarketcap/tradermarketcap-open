@@ -25,9 +25,16 @@ export const VENUES = {
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
   cryptocom: { name: 'Crypto.com Exchange', type: 'Exchange', site: 'https://crypto.com/exchange' },
   upbit: { name: 'Upbit', type: 'Exchange', site: 'https://upbit.com' },
+  htx: { name: 'HTX', type: 'Exchange', site: 'https://www.htx.com' },
 };
 
 let krakenPairs = null, krakenPairsAt = 0;
+// HTX pair metadata rarely changes; the rolling 24h open moves every second, so it is
+// cached briefly rather than refetched for every pair on every tick.
+let htxPairs = null, htxPairsAt = 0;
+const htxOpen = new Map();
+const HTX_OPEN_TTL = 3 * 60e3;
+const HTX_OPEN_BATCH = 120;
 
 export const READERS = {
   async coinbase() {
@@ -222,6 +229,79 @@ export const READERS = {
         trade: `https://upbit.com/exchange?code=CRIX.UPBIT.${v.market}`,
       });
     }
+    return out;
+  },
+  // HTX (formerly Huobi) answers HTTP 200 even on errors, so check status. Symbols are
+  // lowercase joined (btcusdt); taking the base/quote from the exchange's own symbol list
+  // avoids guessing a split, which on other venues mints bases like SOLRL from SOLRLUSD.
+  // The bulk `open`/`close`/`high`/`low` fields are a *natural day* (UTC+8) candle, not a
+  // rolling 24 hours — deriving change from them flips the sign on 202 of 493 pairs.
+  // The rolling 24h open is on market/detail/merged, which needs one call per pair, so the
+  // open is cached for a few minutes; price and volume still refresh every cycle from bulk.
+  async htx() {
+    if (!htxPairs || Date.now() - htxPairsAt > 6 * 3600e3) {
+      const s = await getJSON('https://api.huobi.pro/v1/common/symbols', { timeout: 25000 });
+      if (s.status !== 'ok') throw new Error(`htx symbol list status ${s.status}`);
+      htxPairs = new Map();
+      for (const v of s.data || []) {
+        const base = String(v['base-currency'] || '').toUpperCase();
+        const quote = String(v['quote-currency'] || '').toUpperCase();
+        if (v.state !== 'online' || !base || !USD_QUOTES.has(quote)) continue;
+        // One pair is listed under a Chinese name. Its trade URL resolves, but a ticker
+        // that is not printable ASCII does not belong next to the rest.
+        if (!/^[\x20-\x7e]+$/.test(base)) continue;
+        htxPairs.set(v.symbol, { base: sym(base), quote });
+      }
+      htxPairsAt = Date.now();
+    }
+    if (!htxPairs.size) throw new Error('htx no USD markets');
+    const d = await getJSON('https://api.huobi.pro/market/tickers', { timeout: 25000 });
+    if (d.status !== 'ok') throw new Error(`htx status ${d.status} ${d['err-msg'] || ''}`.trim());
+    // Bulk rows include delisted and reset pairs; a pair with no trades is not a market.
+    const live = (d.data || []).filter(v => htxPairs.has(v.symbol) && n(v.close) > 0 && n(v.vol) > 0);
+    if (!live.length) throw new Error('htx no live USD markets');
+    const stale = live.filter(v => {
+      const c = htxOpen.get(v.symbol);
+      return !c || Date.now() - c.at > HTX_OPEN_TTL;
+    });
+    // A cold start reads every pair once; after that the oldest opens are refreshed in
+    // bounded batches so one tick never fires 500 requests at the exchange.
+    const batch = htxOpen.size
+      ? stale.sort((a, b) => (htxOpen.get(a.symbol)?.at || 0) - (htxOpen.get(b.symbol)?.at || 0)).slice(0, HTX_OPEN_BATCH)
+      : stale;
+    let failed = 0;
+    const queue = batch.map(v => v.symbol);
+    const worker = async () => {
+      while (queue.length) {
+        const symbol = queue.pop();
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const r = await getJSON(`https://api.huobi.pro/market/detail/merged?symbol=${symbol}`, { timeout: 20000 });
+            if (r.status !== 'ok') throw new Error(`htx detail ${symbol} status ${r.status}`);
+            htxOpen.set(symbol, { open: n(r.tick.open), at: Date.now() });
+            break;
+          } catch (e) {
+            if (attempt) { htxOpen.delete(symbol); failed++; }
+          }
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: 16 }, worker));
+    const out = [];
+    for (const v of live) {
+      const p = htxPairs.get(v.symbol), c = htxOpen.get(v.symbol);
+      if (!p || !c) continue;
+      const price = n(v.close), open = n(c.open);
+      out.push({
+        venue: 'htx', base: p.base, quote: p.quote, price, volBase: n(v.amount), volQuote: n(v.vol),
+        change24h: price && open ? (price / open - 1) * 100 : null,
+        api: `https://api.huobi.pro/market/detail/merged?symbol=${v.symbol}`,
+        trade: `https://www.htx.com/trade/${p.base.toLowerCase()}_${p.quote.toLowerCase()}`,
+      });
+    }
+    // Never hand back a silently empty venue: if the rolling opens could not be read for
+    // any pair at all, the read failed rather than the market being flat.
+    if (!out.length) throw new Error(`htx no readable pairs (${failed} failed)`);
     return out;
   },
 };

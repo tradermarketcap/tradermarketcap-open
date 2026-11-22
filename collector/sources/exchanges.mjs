@@ -233,6 +233,15 @@ export const READERS = {
     if (!geminiSymbols || Date.now() - geminiSymbolsAt > 6 * 3600e3) {
       geminiSymbols = (await getJSON('https://api.gemini.com/v1/symbols', { timeout: 25000 }))
         .filter(s => /(?:usdc|usdt|usd)$/.test(s));
+      // 'Xgusd' is Gemini's X/GUSD market; GUSD is not a quote we keep, and when
+      // the plain 'Xusd' sibling exists the g-form would surface as a bogus 'XG'
+      // base quoting the same price. Drop the twin; real G-ending bases (PAXG,
+      // USDG) have no sibling and are kept.
+      const symSet = new Set(geminiSymbols);
+      geminiSymbols = geminiSymbols.filter(pair => {
+        const m = pair.match(/^(.*?)(usdc|usdt|usd)$/);
+        return !(m && m[1].length > 1 && m[1].endsWith('g') && symSet.has(m[1].slice(0, -1) + m[2]));
+      });
       geminiSymbolsAt = Date.now();
     }
     const out = [];

@@ -1,1 +1,9 @@
-["btcusd","ethusdt","solusdc","btceur","btcxbt"]
+[
+  "btcusd",
+  "ethusdt",
+  "solusdc",
+  "btceur",
+  "btcxbt",
+  "aaveusd",
+  "aavegusd"
+]

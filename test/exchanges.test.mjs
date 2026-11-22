@@ -130,7 +130,9 @@ test('gemini: USD-quoted pairs with volume, change and links', async () => {
   const ms = await READERS.gemini();
   assert.ok(urls[0] === 'https://api.gemini.com/v1/symbols');
   assert.ok(VENUES.gemini);
-  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'ETH/USDT', 'SOL/USDC']);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'ETH/USDT', 'SOL/USDC', 'AAVE/USD']);
+  // 'aavegusd' is Gemini's AAVE/GUSD twin of 'aaveusd'; it must not surface as AAVEG/USD.
+  assert.ok(ms.every(m => m.base !== 'AAVEG'));
   const btc = ms[0];
   assert.equal(btc.venue, 'gemini');
   assert.equal(btc.price, 59823.09);

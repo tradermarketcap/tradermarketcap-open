@@ -106,3 +106,58 @@ test('sui: a broken API answer fails the read', async () => {
   try { await assert.rejects(readSupply({ method: 'sui' }), /bad sui/); }
   finally { restore(); }
 });
+
+// AERO on Base. Values below are the live reads on 2026-11-22, block 60,754,622:
+// totalSupply 2,149,167,194 and sAERO holding 1,080,292,319 AERO. Aero's own upgrade page
+// publishes circulating as total less sAERO (~1.07B), which these two numbers reproduce.
+const AERO = '0x3f5bf3edac59d650d8fdf9657a71f2f904a3a4ee';
+
+function fakeBase({ total = '0x' + (2149167194n * 10n ** 18n).toString(16),
+                    saero = '0x' + (1080292319n * 10n ** 18n).toString(16),
+                    saeroFails = false } = {}) {
+  const seen = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const req = JSON.parse(opts.body);
+    const reply = result => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) });
+    const { to, data } = req.params[0];
+    seen.push({ to: to.toLowerCase(), selector: data.slice(0, 10) });
+    if (data.startsWith('0x313ce567')) return reply('0x' + (18).toString(16).padStart(64, '0'));
+    if (data.startsWith('0x18160ddd')) return reply(total);
+    // balanceOf(holder): answer 0 for anything that is not the sAERO contract
+    const holder = '0x' + data.slice(-40);
+    if (holder === '0xbf7977e1521e9a3032bf7243ee4712f311f13915') {
+      if (saeroFails) return { ok: false, status: 500, json: async () => ({ error: 'boom' }) };
+      return reply(saero);
+    }
+    return reply('0x' + (0n).toString(16));
+  };
+  return seen;
+}
+
+test('aero: circulating is total supply minus the sAERO staked balance, not the migration reserves', async () => {
+  const seen = fakeBase();
+  const s = await readSupply({
+    method: 'tokens',
+    parts: [{ chain: 'base', address: '0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee' }],
+    exclude: [{ chain: 'base', holder: '0xBF7977E1521e9a3032bf7243Ee4712f311f13915', reason: 'sAERO' }],
+  });
+  assert.equal(s.total, 2149167194);
+  // the excluded balance is subtracted exactly once
+  const sAero = s.excluded.find(e => e.holder.toLowerCase() === '0xbf7977e1521e9a3032bf7243ee4712f311f13915');
+  assert.ok(sAero, 'sAERO appears in excluded');
+  assert.equal(sAero.amount, 1080292319);
+  assert.equal(s.circulating, 2149167194 - 1080292319);
+  // the published figure is ~1.07B; refusing to also subtract the migration reserves keeps us there
+  assert.ok(Math.abs(s.circulating - 1.07e9) / 1.07e9 < 0.01);
+  // only the live contract is queried
+  assert.ok(seen.every(c => c.to === AERO || c.to === '0xbf7977e1521e9a3032bf7243ee4712f311f13915'));
+});
+
+test('aero: a failed sAERO balance read throws instead of publishing an overstated circulating', async () => {
+  fakeBase({ saeroFails: true });
+  await assert.rejects(readSupply({
+    method: 'tokens',
+    parts: [{ chain: 'base', address: '0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee' }],
+    exclude: [{ chain: 'base', holder: '0xBF7977E1521e9a3032bf7243Ee4712f311f13915', reason: 'sAERO' }],
+  }));
+});

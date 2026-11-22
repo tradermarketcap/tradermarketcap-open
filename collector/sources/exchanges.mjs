@@ -30,7 +30,68 @@ export const VENUES = {
 
 // Bitfinex writes some symbols with a colon (tLINK:USD, tAVAX:USD) and others joined (tBTCUSD),
 // so both forms have to be read. UST is Bitfinex's name for USDT. Anything still unclear is dropped.
-function bitfinexPair(symbol) {
+//
+// Bitfinex's own tickers are not the tickers everyone else uses, and two of them collide with real
+// coins: their UST is Tether USDt (not TerraUSD) and their WBT is Wrapped Bitcoin (not WhiteBIT
+// Token, which they call WHBT). Publishing the codes unchanged put both markets under the wrong
+// coin, so bitfinexCodeMaps() below reads Bitfinex's own symbol/label/explorer maps and the reader
+// translates each base before publishing.
+//
+// The same maps identify rows that are not crypto at all: tokenized notes and securities such as
+// ALT2612, CH100, CMSTR, TITAN1-4, USTBL, ALKN have no label beyond their own code and no chain, so
+// on the site they would appear as coins. Drop those. A base is kept when it has a real name OR a
+// blockchain explorer OR an alias in Bitfinex's map, which is why real assets with a terse name
+// (XRP, SOL, DOGE) survive.
+const BITFINEX_QUOTES = new Set(['USD', 'USDT', 'USDC']);
+const FIAT_BASES = new Set(['EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD', 'CNH', 'SGD', 'NZD', 'HKD']);
+
+let bfMaps = null, bfMapsAt = 0;
+
+async function bitfinexCodeMaps() {
+  if (bfMaps && Date.now() - bfMapsAt < 6 * 3600e3) return bfMaps;
+  const [symRaw, labelRaw, explorerRaw] = await Promise.all([
+    getJSON('https://api-pub.bitfinex.com/v2/conf/pub:map:currency:sym'),
+    getJSON('https://api-pub.bitfinex.com/v2/conf/pub:map:currency:label'),
+    getJSON('https://api-pub.bitfinex.com/v2/conf/pub:map:currency:explorer'),
+  ]);
+  const toMap = raw => {
+    if (!Array.isArray(raw?.[0])) throw new Error('bitfinex bad code map');
+    return new Map(raw[0]);
+  };
+  bfMaps = { sym: toMap(symRaw), label: toMap(labelRaw), explorer: toMap(explorerRaw) };
+  bfMapsAt = Date.now();
+  return bfMaps;
+}
+
+// Translate one of Bitfinex's currency codes to the ticker the rest of the world uses.
+//
+// This is a small explicit table on purpose. Bitfinex's sym map is not a rename map: it carries
+// display forms ("USDt" for UST, "XAUt" for XAUT) and genuine renames (TON -> "GRAM"), and applying
+// it verbatim would publish GRAM for the TON market, which is the same class of error this fix is
+// about. Each entry below was read off
+// https://api-pub.bitfinex.com/v2/conf/pub:map:currency:sym and cross-checked against the label map,
+// so every one is the same asset under a different code. A code not listed here keeps Bitfinex's
+// own ticker, which is never fabricated — it is the code the exchange itself uses.
+//
+// The two collisions the review named are the reason this exists: Bitfinex's UST is Tether USDt
+// (not TerraUSD) and its WBT is Wrapped Bitcoin (not WhiteBIT Token, which it calls WHBT).
+const BITFINEX_TICKER = {
+  UST: 'USDT',   // Tether USDt  (label "Tether USDt")
+  WBT: 'WBTC',   // Wrapped Bitcoin (label "Wrapped Bitcoin")
+  WHBT: 'WBT',   // WhiteBIT Token (label "WhiteBIT Token")
+  UDC: 'USDC',   // USDc
+  DSH: 'DASH',   // Dash
+  IOT: 'IOTA',   // Iota
+  ALG: 'ALGO',   // Algorand
+  OPX: 'OP',     // Optimism
+  LIFIII: 'LIF3',
+  BCHN: 'BCH',   // Bitcoin Cash
+};
+
+// Codes Bitfinex prices that are not tradable coins: ETH2X is a staked-ETH accounting unit.
+const BITFINEX_NOT_COINS = new Set(['ETH2X']);
+
+function bitfinexPair(symbol, maps) {
   if (!symbol.startsWith('t')) return null;
   const body = symbol.slice(1);
   let base, raw;
@@ -43,9 +104,16 @@ function bitfinexPair(symbol) {
   }
   if (!base || !raw) return null;
   const quote = raw === 'UST' ? 'USDT' : raw;
-  if (!base || !keep(base, quote)) return null;
+  if (!BITFINEX_QUOTES.has(quote)) return null;
   if (base.includes('TEST') || raw.includes('TEST')) return null; // Bitfinex's play-money pairs
-  return { base, quote, raw };
+  if (FIAT_BASES.has(base)) return null; // EUR/USD, GBP/USD are currency crosses, not coins
+  if (BITFINEX_NOT_COINS.has(base)) return null; // ETH2X is a staked-ETH accounting unit
+  // Tokenized notes and securities carry no name beyond their own code and no chain. Real assets
+  // with a terse name (XRP, SOL, DOGE) are in the explorer map, so they survive this.
+  if (!maps.label.has(base) || maps.label.get(base) === base) {
+    if (!maps.explorer.has(base) && !maps.sym.has(base)) return null;
+  }
+  return { base, quote, raw, ticker: BITFINEX_TICKER[base] || base };
 }
 
 let krakenPairs = null, krakenPairsAt = 0;
@@ -249,16 +317,17 @@ export const READERS = {
   // last, volBase, high, low, ts]. Funding rows ('f' prefix) are not spot markets. An error answer is a
   // bare string (ERR_UNKNOWN) or an empty list, and both must fail loudly instead of returning no markets.
   async bitfinex() {
+    const maps = await bitfinexCodeMaps();
     const d = await getJSON('https://api-pub.bitfinex.com/v2/tickers?symbols=ALL', { timeout: 25000 });
     if (!Array.isArray(d) || d.length === 0) throw new Error('bitfinex bad response');
     const out = [];
     for (const v of d) {
       if (!Array.isArray(v) || v.length < 10 || typeof v[0] !== 'string') continue;
-      const p = bitfinexPair(v[0]);
+      const p = bitfinexPair(v[0], maps);
       if (!p) continue;
       const price = n(v[7]), volBase = n(v[8]);
       out.push({
-        venue: 'bitfinex', base: sym(p.base), quote: p.quote, price, volBase,
+        venue: 'bitfinex', base: p.ticker, quote: p.quote, price, volBase,
         volQuote: volBase != null && price != null ? volBase * price : null,
         change24h: n(v[6]) != null ? n(v[6]) * 100 : null,
         api: `https://api-pub.bitfinex.com/v2/tickers?symbols=${v[0]}`,

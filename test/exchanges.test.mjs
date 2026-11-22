@@ -17,6 +17,23 @@ function fakeFetch(body) {
 const bybitFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bybit-spot-tickers.json', import.meta.url), 'utf8'));
 const bitgetFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitget-spot-tickers.json', import.meta.url), 'utf8'));
 const bitfinexFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitfinex-tickers.json', import.meta.url), 'utf8'));
+const bitfinexSym = () => JSON.parse(readFileSync(new URL('./fixtures/bitfinex-sym.json', import.meta.url), 'utf8'));
+const bitfinexLabel = () => JSON.parse(readFileSync(new URL('./fixtures/bitfinex-label.json', import.meta.url), 'utf8'));
+const bitfinexExplorer = () => JSON.parse(readFileSync(new URL('./fixtures/bitfinex-explorer.json', import.meta.url), 'utf8'));
+
+// The Bitfinex reader reads three currency maps plus the tickers. Answer each by URL.
+function fakeBitfinex({ tickers = bitfinexFixture(), sym = bitfinexSym(), label = bitfinexLabel(), explorer = bitfinexExplorer() } = {}) {
+  const urls = [];
+  globalThis.fetch = async url => {
+    const u = String(url); urls.push(u);
+    if (u.includes('pub:map:currency:sym')) return new Response(JSON.stringify(sym), { status: 200 });
+    if (u.includes('pub:map:currency:label')) return new Response(JSON.stringify(label), { status: 200 });
+    if (u.includes('pub:map:currency:explorer')) return new Response(JSON.stringify(explorer), { status: 200 });
+    if (u.includes('symbols=ALL')) return new Response(JSON.stringify(tickers), { status: 200 });
+    throw new Error('unexpected url ' + u);
+  };
+  return urls;
+}
 const cryptocomFixture = () => JSON.parse(readFileSync(new URL('./fixtures/cryptocom-tickers.json', import.meta.url), 'utf8'));
 
 test('bybit: USD-quoted spot pairs with volume, change and links', async () => {
@@ -116,12 +133,15 @@ test('upbit: an empty market list fails the read', async () => {
 });
 
 test('bitfinex: USD/UST spot pairs with volume, change and working links', async () => {
-  const urls = fakeFetch(bitfinexFixture());
+  const urls = fakeBitfinex();
   const ms = await READERS.bitfinex();
-  assert.deepEqual(urls, ['https://api-pub.bitfinex.com/v2/tickers?symbols=ALL']);
+  assert.ok(urls.some(u => u.includes('symbols=ALL')));
   assert.ok(VENUES.bitfinex);
-  // BTCUSD, BTCUST, ETHUSD, LINK:USD, LINK:UST. TEST, F0 (perp) and funding rows are all dropped.
-  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'BTC/USDT', 'ETH/USD', 'LINK/USD', 'LINK/USDT']);
+  // BTCUSD, BTCUST, ETHUSD, LINK:USD, LINK:UST. TEST, F0 (perp) and funding rows are all dropped,
+  // the non-crypto rows (CH100) and the fiat cross (EURUSD) are dropped, and Bitfinex's own codes
+  // are translated: UDC -> USDC, WBT (their Wrapped Bitcoin) -> WBTC, WHBT (WhiteBIT) -> WBT.
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`),
+    ['BTC/USD', 'BTC/USDT', 'ETH/USD', 'LINK/USD', 'LINK/USDT', 'USDC/USD', 'WBTC/USD', 'WBT/USDT']);
   const btc = ms[0];
   assert.equal(btc.venue, 'bitfinex');
   assert.equal(btc.price, 60239);
@@ -138,14 +158,34 @@ test('bitfinex: USD/UST spot pairs with volume, change and working links', async
   assert.equal(ms[3].trade, 'https://trading.bitfinex.com/t/LINK:USD');
   assert.equal(ms[4].quote, 'USDT');
   assert.equal(ms[4].trade, 'https://trading.bitfinex.com/t/LINK:UST');
+  // The translated ticker must not change the trade link: Bitfinex still calls WBTC "WBT".
+  const wbtc = ms.find(m => m.base === 'WBTC');
+  assert.equal(wbtc.trade, 'https://trading.bitfinex.com/t/WBT:USD');
+  // UST is Tether USDt, never TerraUSD, and WBT is WhiteBIT Token, never Wrapped Bitcoin.
+  assert.ok(!ms.some(m => m.base === 'UST'), 'UST must be published as USDT');
+  assert.equal(ms.find(m => m.base === 'WBT').base, 'WBT');
+  // No non-crypto row may survive: these are tokenized notes/securities in Bitfinex's own label map.
+  for (const bad of ['CH100', 'ALT2612', 'TITAN1', 'CMSTR', 'USTBL', 'ALKN', 'EUR']) {
+    assert.ok(!ms.some(m => m.base === bad), `non-crypto row ${bad} leaked`);
+  }
 });
 
 test('bitfinex: an empty answer fails the read instead of reporting no markets', async () => {
-  fakeFetch([]);
+  fakeBitfinex({ tickers: [] });
   await assert.rejects(READERS.bitfinex(), /bad response/);
 });
 
 test('bitfinex: an error string fails the read', async () => {
-  fakeFetch('ERR_UNKNOWN');
+  fakeBitfinex({ tickers: 'ERR_UNKNOWN' });
   await assert.rejects(READERS.bitfinex(), /bad response/);
+});
+
+test('bitfinex: a real coin with no label but a chain (XRP) is kept, not treated as a note', async () => {
+  const tickers = [...bitfinexFixture(), ['tXRPUSD', 2.1, 1e6, 2.11, 1e6, 0.01, 0.0048, 2.105, 2078889.64, 2.2, 2.0, 1358182043000]];
+  fakeBitfinex({ tickers });
+  const ms = await READERS.bitfinex();
+  const xrp = ms.find(m => m.base === 'XRP');
+  assert.ok(xrp, 'XRP must survive the non-crypto filter');
+  assert.equal(xrp.quote, 'USD');
+  assert.ok(xrp.price > 0);
 });

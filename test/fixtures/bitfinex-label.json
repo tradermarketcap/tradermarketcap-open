@@ -1,0 +1,44 @@
+[
+  [
+    [
+      "BTC",
+      "Bitcoin"
+    ],
+    [
+      "ETH",
+      "Ethereum"
+    ],
+    [
+      "LINK",
+      "Chainlink"
+    ],
+    [
+      "UST",
+      "Tether USDt"
+    ],
+    [
+      "WBT",
+      "Wrapped Bitcoin"
+    ],
+    [
+      "WHBT",
+      "WhiteBIT Token"
+    ],
+    [
+      "UDC",
+      "USDc"
+    ],
+    [
+      "DSH",
+      "Dash"
+    ],
+    [
+      "CH100",
+      "CH100"
+    ],
+    [
+      "XAUT",
+      "Tether Gold"
+    ]
+  ]
+]

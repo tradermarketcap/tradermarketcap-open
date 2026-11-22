@@ -133,6 +133,22 @@ const METHODS = {
     const d = await getJSON('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'tokenDetails', tokenId: r.tokenId }) });
     return { circulating: Number(d.circulatingSupply), total: Number(d.totalSupply), src: 'https://app.hyperliquid.xyz/explorer', note: 'Hyperliquid L1 tokenDetails (non-circulating balances excluded by the chain)' };
   },
+  // THORChain (RUNE): THORNode's own supply endpoint nets out the reserve module and
+  // other protocol-held balances before reporting circulating. We surface the locked
+  // breakdown it returns so the coin page shows exactly what was removed. Units are
+  // whole RUNE (THORNode reports decimal-adjusted values, like Midgard).
+  async 'thorchain-supply'() {
+    const url = 'https://gateway.liquify.com/chain/thorchain_api/thorchain/supply';
+    const d = await getJSON(url);
+    const c = Number(d.circulating), t = Number(d.total);
+    if (!(c > 0) || !(t >= c)) throw new Error('bad THORChain supply');
+    const excluded = Object.entries(d.locked || {}).map(([k, v]) => ({
+      reason: `THORChain ${k} module (protocol-held, per THORNode)`, amount: Number(v),
+      src: 'https://gateway.liquify.com/chain/thorchain_api/thorchain/doc',
+    }));
+    return { circulating: c, total: t, src: url, excluded,
+      note: 'THORNode /thorchain/supply: reserve and module accounts already netted out by the chain' };
+  },
   async nearblocks() {
     const t = (await getJSON('https://api.nearblocks.io/v1/stats')).stats[0];
     return { circulating: Number(BigInt(t.circulating_supply) / 10n ** 18n) / 1e6, total: Number(BigInt(t.total_supply) / 10n ** 18n) / 1e6, src: 'https://nearblocks.io/charts/near-supply', note: 'NearBlocks explorer: total minus lockup contracts not yet vested' };

@@ -106,3 +106,38 @@ test('sui: a broken API answer fails the read', async () => {
   try { await assert.rejects(readSupply({ method: 'sui' }), /bad sui/); }
   finally { restore(); }
 });
+
+// Fake THORNode supply endpoint. Response shape captured from
+// https://gateway.liquify.com/chain/thorchain_api/thorchain/supply on 2026-11-22.
+function fakeThorNode(body) {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async url => {
+    assert.ok(String(url).includes('thorchain_api/thorchain/supply'));
+    return { ok: true, status: 200, json: async () => body };
+  };
+  return () => { globalThis.fetch = realFetch; };
+}
+
+test('thorchain: THORNode supply nets out the reserve module', async () => {
+  const restore = fakeThorNode({
+    circulating: 329080782, total: 353821011, locked: { reserve: 24740228 },
+  });
+  try {
+    const s = await readSupply({ method: 'thorchain-supply' });
+    assert.equal(s.circulating, 329080782);
+    assert.equal(s.total, 353821011);
+    assert.equal(s.excluded.length, 1);
+    assert.equal(s.excluded[0].amount, 24740228);
+    assert.ok(Math.abs(s.total - s.circulating - s.excluded[0].amount) < 10, 'locked breakdown explains the gap (sub-RUNE rounding)');
+    assert.equal(s.checked, true);
+  } finally { restore(); }
+});
+
+test('thorchain: a broken supply answer fails the read', async () => {
+  for (const body of [{ circulating: 0, total: 353821011, locked: {} },
+                      { circulating: 400000000, total: 353821011, locked: {} }]) {
+    const restore = fakeThorNode(body);
+    try { await assert.rejects(readSupply({ method: 'thorchain-supply' }), /bad THORChain/); }
+    finally { restore(); }
+  }
+});

@@ -106,3 +106,49 @@ test('sui: a broken API answer fails the read', async () => {
   try { await assert.rejects(readSupply({ method: 'sui' }), /bad sui/); }
   finally { restore(); }
 });
+
+// Real shape captured from https://api.mainnet.aptoslabs.com/v1/view on 2026-11-22:
+// POST {function:'0x1::coin::supply', ...} -> [{"vec":["121196053522181888"]}]
+function fakeAptos(reply = [{ vec: ['121196053522181888'] }]) {
+  globalThis.fetch = async (url, opts = {}) => {
+    assert.ok(String(url).includes('api.mainnet.aptoslabs.com/v1/view'), 'only the chain view is called');
+    const req = JSON.parse(opts.body);
+    assert.equal(req.function, '0x1::coin::supply');
+    assert.deepEqual(req.type_arguments, ['0x1::aptos_coin::AptosCoin']);
+    return { ok: true, status: 200, json: async () => reply };
+  };
+  return () => { globalThis.fetch = globalThis.fetch; };
+}
+
+test('aptos: total is the chain supply read; circulating stays unpublished', async () => {
+  fakeAptos();
+  try {
+    const s = await readSupply({ method: 'aptos', circulating: false, max: 2100000000 });
+    assert.ok(Math.abs(s.total - 1211960535.2218188) < 1e-5);
+    assert.equal(s.circulating, null, 'no unverified lock is subtracted');
+    assert.deepEqual(s.excluded, []);
+    assert.equal(s.checked, true);
+    assert.equal(s.max, 2100000000);
+    assert.match(s.note, /not published/i);
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('aptos: the older nested-array shape is read too', async () => {
+  fakeAptos([['121196053522181888']]);
+  try {
+    const s = await readSupply({ method: 'aptos' });
+    assert.ok(Math.abs(s.total - 1211960535.2218188) < 1e-5);
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('aptos: a missing or junk supply answer fails the read instead of publishing 0', async () => {
+  fakeAptos([{ vec: [] }]);
+  try { await assert.rejects(readSupply({ method: 'aptos' }), /no integer supply/); }
+  finally { globalThis.fetch = realFetch; }
+  fakeAptos([{ vec: ['12.5e6'] }]);
+  try { await assert.rejects(readSupply({ method: 'aptos' }), /no integer supply/); }
+  finally { globalThis.fetch = realFetch; }
+  fakeAptos([]);
+  try { await assert.rejects(readSupply({ method: 'aptos' }), /no integer supply/); }
+  finally { globalThis.fetch = realFetch; }
+});

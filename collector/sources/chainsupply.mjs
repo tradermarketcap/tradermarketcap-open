@@ -313,6 +313,40 @@ const METHODS = {
       excluded: [{ reason: 'Locked allocations (foundation, community reserve, early supporters)', amount: total - circ, src: 'https://blog.sui.io/token-release-schedule/' }],
       note: 'Total from Sui GraphQL; circulating from the official Sui Explorer circulation API (Sui JSON-RPC is deprecated). Stake rewards are circulating when paid' };
   },
+  // Aptos (APT): total supply from the chain's own coin supply view (0x1::coin::supply), which
+  // already excludes burned gas fees (all APT gas is burned). Circulating is NOT published:
+  // AIP-140 commits the Foundation to locking and permanently staking 210M APT ("never sold or
+  // distributed"), but the Foundation has published no address, contract or execution date for
+  // that lock, and it cannot be found by reading the chain (the 81 active validator pools hold
+  // 753.9M APT in total and none is near 210M). Subtracting a constant we cannot verify is the
+  // defect this bounty exists to remove, and the rule is "never overstate circulating", so
+  // circulating stays unpublished rather than guessed. Total is a real chain read.
+  async aptos() {
+    const url = 'https://api.mainnet.aptoslabs.com/v1/view';
+    const res = await getJSON(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        function: '0x1::coin::supply',
+        type_arguments: ['0x1::aptos_coin::AptosCoin'],
+        arguments: [],
+      }),
+    });
+    // Shape is [{ vec: ["<amount>"] }]; older nodes answered [["<amount>"]].
+    const first = Array.isArray(res) ? res[0] : null;
+    const raw = Array.isArray(first) ? first[0] : Array.isArray(first?.vec) ? first.vec[0] : null;
+    if (typeof raw !== 'string' || !/^\d+$/.test(raw)) throw new Error('aptos: no integer supply in view response');
+    const total = Number(raw) / 1e8;
+    if (!(total > 0)) throw new Error(`aptos: bad total supply ${total}`);
+    return {
+      circulating: null,
+      total,
+      src: `${url} 0x1::coin::supply`,
+      parts: [{ chain: 'aptos', amount: total, src: url }],
+      excluded: [],
+      note: 'Total is the chain read (gas fees are burned, so they are already out). Circulating is not published: the Foundation\'s 210M APT permanent lock (AIP-140) has no published address or contract and cannot be read from the chain, so subtracting it would be an unverified guess. Locked community/foundation vesting tranches run to 2032 and are not identifiable on-chain either.',
+    };
+  },
   async extra() {
     return extraSupply();
   },

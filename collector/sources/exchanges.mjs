@@ -22,6 +22,7 @@ export const VENUES = {
   mexc: { name: 'MEXC', type: 'Exchange', site: 'https://www.mexc.com' },
   binanceus: { name: 'Binance.US', type: 'Exchange', site: 'https://www.binance.us' },
   bybit: { name: 'Bybit', type: 'Exchange', site: 'https://www.bybit.com' },
+  bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
 };
 
 let krakenPairs = null, krakenPairsAt = 0;
@@ -158,6 +159,23 @@ export const READERS = {
         change24h: n(v.price24hPcnt) != null ? n(v.price24hPcnt) * 100 : null,
         api: `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${v.symbol}`,
         trade: `https://www.bybit.com/en/trade/spot/${b}/${q}`,
+      });
+    }
+    return out;
+  },
+  // Bitget answers HTTP 200 even on errors, so check code. change24h is a fraction (-0.01865 = -1.865%).
+  async bitget() {
+    const d = await getJSON('https://api.bitget.com/api/v2/spot/market/tickers', { timeout: 25000 });
+    if (d.code !== '00000') throw new Error(`bitget code ${d.code} ${d.msg || ''}`.trim());
+    const out = [];
+    for (const v of d.data || []) {
+      const [b, q] = splitJoined(v.symbol);
+      if (!keep(b, q)) continue;
+      out.push({
+        venue: 'bitget', base: b, quote: q, price: n(v.lastPr), volBase: n(v.baseVolume), volQuote: n(v.quoteVolume),
+        change24h: n(v.change24h) != null ? n(v.change24h) * 100 : null,
+        api: `https://api.bitget.com/api/v2/spot/market/tickers?symbol=${v.symbol}`,
+        trade: `https://www.bitget.com/spot/${b}${q}`,
       });
     }
     return out;

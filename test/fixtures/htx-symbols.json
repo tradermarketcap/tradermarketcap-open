@@ -1,9 +1,85 @@
-{"status":"ok","data":[
- {"base-currency":"btc","quote-currency":"usdt","symbol":"btcusdt","state":"online","price-precision":2,"amount-precision":6},
- {"base-currency":"eth","quote-currency":"usdc","symbol":"ethusdc","state":"online","price-precision":2,"amount-precision":4},
- {"base-currency":"xrp","quote-currency":"usdt","symbol":"xrpusdt","state":"online","price-precision":4,"amount-precision":2},
- {"base-currency":"ada","quote-currency":"usdt","symbol":"adausdt","state":"online","price-precision":5,"amount-precision":0},
- {"base-currency":"eth","quote-currency":"btc","symbol":"ethbtc","state":"online","price-precision":6,"amount-precision":4},
- {"base-currency":"dead","quote-currency":"usdt","symbol":"deadiusdt","state":"offline","price-precision":5,"amount-precision":0},
- {"base-currency":"zigu","quote-currency":"usdt","symbol":"zigusdt","state":"online","price-precision":5,"amount-precision":2}
-]}
+{
+ "status": "ok",
+ "data": [
+  {
+   "base-currency": "btc",
+   "quote-currency": "usdt",
+   "symbol": "btcusdt",
+   "state": "online",
+   "price-precision": 2,
+   "amount-precision": 6
+  },
+  {
+   "base-currency": "eth",
+   "quote-currency": "usdc",
+   "symbol": "ethusdc",
+   "state": "online",
+   "price-precision": 2,
+   "amount-precision": 4
+  },
+  {
+   "base-currency": "xrp",
+   "quote-currency": "usdt",
+   "symbol": "xrpusdt",
+   "state": "online",
+   "price-precision": 4,
+   "amount-precision": 2
+  },
+  {
+   "base-currency": "ada",
+   "quote-currency": "usdt",
+   "symbol": "adausdt",
+   "state": "online",
+   "price-precision": 5,
+   "amount-precision": 0
+  },
+  {
+   "base-currency": "eth",
+   "quote-currency": "btc",
+   "symbol": "ethbtc",
+   "state": "online",
+   "price-precision": 6,
+   "amount-precision": 4
+  },
+  {
+   "base-currency": "dead",
+   "quote-currency": "usdt",
+   "symbol": "deadiusdt",
+   "state": "offline",
+   "price-precision": 5,
+   "amount-precision": 0
+  },
+  {
+   "base-currency": "zigu",
+   "quote-currency": "usdt",
+   "symbol": "zigusdt",
+   "state": "online",
+   "price-precision": 5,
+   "amount-precision": 2
+  },
+  {
+   "base-currency": "trx3l",
+   "quote-currency": "usdt",
+   "symbol": "trx3lusdt",
+   "state": "online",
+   "price-precision": 5,
+   "amount-precision": 0
+  },
+  {
+   "base-currency": "trx3s",
+   "quote-currency": "usdt",
+   "symbol": "trx3susdt",
+   "state": "online",
+   "price-precision": 5,
+   "amount-precision": 0
+  },
+  {
+   "base-currency": "e1e2",
+   "quote-currency": "usdt",
+   "symbol": "e1e2usdt",
+   "state": "online",
+   "price-precision": 5,
+   "amount-precision": 0
+  }
+ ]
+}

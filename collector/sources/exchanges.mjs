@@ -244,6 +244,8 @@ export const READERS = {
         const base = String(v['base-currency'] || '').toUpperCase();
         const quote = String(v['quote-currency'] || '').toUpperCase();
         if (v.state !== 'online' || !base || !USD_QUOTES.has(quote)) continue;
+        // Leveraged ETP tokens (trx3lusdt -> TRX3L) are not spot assets.
+        if (/\d+[LS]$/.test(base)) continue;
         if (!/^[\x20-\x7e]+$/.test(base)) continue;
         htxPairs.set(v.symbol, { base: sym(base), quote });
       }
@@ -252,7 +254,7 @@ export const READERS = {
     if (!htxPairs.size) throw new Error('htx no USD markets');
     const d = await getJSON('https://api.huobi.pro/market/tickers', { timeout: 25000 });
     if (d.status !== 'ok') throw new Error(`htx status ${d.status} ${d['err-msg'] || ''}`.trim());
-    const live = (d.data || []).filter(v => htxPairs.has(v.symbol) && n(v.close) > 0 && n(v.vol) > 0);
+    const live = (d.data || []).filter(v => htxPairs.has(v.symbol) && n(v.close) > 0 && n(v.vol) > 0 && n(v.open) > 0);
     if (!live.length) throw new Error('htx no live USD markets');
     const stale = live.filter(v => {
       const c = htxOpen.get(v.symbol);

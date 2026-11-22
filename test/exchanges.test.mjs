@@ -163,6 +163,8 @@ test('htx: pairs come from the symbol list, 24h change from the rolling window',
   assert.equal(urls.filter(u => u.includes('/market/tickers')).length, 1);
   const details = urls.filter(u => u.includes('/market/detail/merged')).map(u => u.split('symbol=')[1]);
   assert.deepEqual([...new Set(details)].sort(), ['adausdt', 'btcusdt', 'ethusdc', 'xrpusdt']);
+  // Leveraged ETPs (trx3l/trx3s) and the open=0 test row never reach the detail calls.
+  assert.ok(!urls.some(u => u.includes('trx3l') || u.includes('trx3s') || u.includes('e1e2')));
 });
 
 test('htx: a tickers error answer fails the read instead of returning nothing', async () => {

@@ -25,6 +25,7 @@ export const VENUES = {
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
   cryptocom: { name: 'Crypto.com Exchange', type: 'Exchange', site: 'https://crypto.com/exchange' },
   upbit: { name: 'Upbit', type: 'Exchange', site: 'https://upbit.com' },
+  bitfinex: { name: 'Bitfinex', type: 'Exchange', site: 'https://www.bitfinex.com' },
 };
 
 let krakenPairs = null, krakenPairsAt = 0;
@@ -220,6 +221,41 @@ export const READERS = {
         change24h: n(v.signed_change_rate) != null ? n(v.signed_change_rate) * 100 : null,
         api: `https://api.upbit.com/v1/ticker?markets=${v.market}`,
         trade: `https://upbit.com/exchange?code=CRIX.UPBIT.${v.market}`,
+      });
+    }
+    return out;
+  },
+  // Bitfinex v2 tickers are positional arrays:
+  // [ SYMBOL, BID, BID_SIZE, ASK, ASK_SIZE, DAILY_CHANGE, DAILY_CHANGE_PERC, LAST_PRICE, VOLUME, HIGH, LOW, ... ]
+  // Symbols are "t" + BASE + QUOTE (e.g. tBTCUSD, tETHUST) or "t" + BASE + ":" + QUOTE for
+  // pairs whose base/quote would otherwise be ambiguous (e.g. tLINK:USD). Funding tickers
+  // start with "f" and are skipped. UST is Bitfinex's name for USDT.
+  async bitfinex() {
+    const d = await getJSON('https://api-pub.bitfinex.com/v2/tickers?symbols=ALL', { timeout: 25000 });
+    if (!Array.isArray(d)) throw new Error('bitfinex bad response');
+    const out = [];
+    for (const v of d) {
+      const symbol = String(v[0] || '');
+      if (!symbol.startsWith('t')) continue; // skip funding (f...) and anything unexpected
+      const body = symbol.slice(1);
+      let b, q;
+      if (body.includes(':')) {
+        [b, q] = body.split(':');
+      } else {
+        for (const qq of ['USDT', 'USDC', 'USD', 'UST']) {
+          if (body.endsWith(qq) && body.length > qq.length) { b = body.slice(0, -qq.length); q = qq; break; }
+        }
+      }
+      if (!b || !q) continue;
+      const quote = q === 'UST' ? 'USDT' : q;
+      if (!USD_QUOTES.has(quote)) continue;
+      const price = n(v[7]);
+      out.push({
+        venue: 'bitfinex', base: sym(b), quote, price,
+        volBase: n(v[8]), volQuote: price != null && n(v[8]) != null ? price * n(v[8]) : null,
+        change24h: n(v[6]) != null ? n(v[6]) * 100 : null,
+        api: `https://api-pub.bitfinex.com/v2/tickers?symbols=${symbol}`,
+        trade: `https://trading.bitfinex.com/t/${b}:${quote === 'USDT' ? 'UST' : quote}`,
       });
     }
     return out;

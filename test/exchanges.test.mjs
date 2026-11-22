@@ -113,3 +113,36 @@ test('upbit: an empty market list fails the read', async () => {
   globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('/v1/market/all') ? [] : []), { status: 200 });
   await assert.rejects(READERS.upbit(), /no USDT markets/);
 });
+
+const bitfinexFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitfinex-tickers.json', import.meta.url), 'utf8'));
+
+test('bitfinex: USD/UST spot pairs kept, funding + non-USD skipped, with links', async () => {
+  const urls = fakeFetch(bitfinexFixture());
+  const ms = await READERS.bitfinex();
+  assert.deepEqual(urls, ['https://api-pub.bitfinex.com/v2/tickers?symbols=ALL']);
+  assert.ok(VENUES.bitfinex);
+  // tBTCUSD, tETHUSD, tETHUST (UST->USDT), tLTCUSD, tLINK:USD kept; tETHBTC (BTC quote) and fUSD (funding) skipped.
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'ETH/USD', 'ETH/USDT', 'LTC/USD', 'LINK/USD']);
+  const btc = ms[0];
+  assert.equal(btc.venue, 'bitfinex');
+  assert.equal(btc.price, 59276);
+  assert.equal(btc.volBase, 2998.46200086);
+  assert.equal(btc.volQuote, 59276 * 2998.46200086);
+  assert.ok(Math.abs(btc.change24h - 1.432263) < 1e-9);
+  assert.equal(btc.api, 'https://api-pub.bitfinex.com/v2/tickers?symbols=tBTCUSD');
+  assert.equal(btc.trade, 'https://trading.bitfinex.com/t/BTC:USD');
+  // UST maps to USDT quote but the trade link uses Bitfinex's UST ticker.
+  const ethUst = ms[2];
+  assert.equal(ethUst.quote, 'USDT');
+  assert.equal(ethUst.trade, 'https://trading.bitfinex.com/t/ETH:UST');
+  // Colon-form symbol (tLINK:USD) splits correctly.
+  const link = ms[4];
+  assert.equal(link.base, 'LINK');
+  assert.equal(link.quote, 'USD');
+  assert.equal(link.trade, 'https://trading.bitfinex.com/t/LINK:USD');
+});
+
+test('bitfinex: a non-array answer fails the read', async () => {
+  fakeFetch({ error: 'unavailable' });
+  await assert.rejects(READERS.bitfinex(), /bitfinex bad response/);
+});

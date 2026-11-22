@@ -1,0 +1,42 @@
+[
+ {
+  "pair": "BTCUSD",
+  "price": "59823.09",
+  "percentChange24h": "0.014705"
+ },
+ {
+  "pair": "ETHUSDT",
+  "price": "2400.5",
+  "percentChange24h": "-0.0123"
+ },
+ {
+  "pair": "SOLUSDC",
+  "price": "150.25",
+  "percentChange24h": "0.02"
+ },
+ {
+  "pair": "AAVEUSD",
+  "price": "300.1",
+  "percentChange24h": "0.005"
+ },
+ {
+  "pair": "PAXGUSD",
+  "price": "2600",
+  "percentChange24h": "0.001"
+ },
+ {
+  "pair": "PAXGUSDC",
+  "price": "2601",
+  "percentChange24h": "0.001"
+ },
+ {
+  "pair": "USDGUSD",
+  "price": "1.0",
+  "percentChange24h": "0.0"
+ },
+ {
+  "pair": "USDGUSDC",
+  "price": "1.0",
+  "percentChange24h": "0.0"
+ }
+]

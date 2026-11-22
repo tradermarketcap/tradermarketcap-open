@@ -255,31 +255,33 @@ export const READERS = {
       });
       geminiSymbolsAt = Date.now();
     }
+    // v1/pricefeed returns every pair's price and 24h change in one call; only
+    // volume still needs a per-pair pubticker. ~N+2 calls per run instead of ~2N.
+    const feed = await getJSON('https://api.gemini.com/v1/pricefeed', { timeout: 25000 });
+    if (!Array.isArray(feed)) throw new Error('gemini bad pricefeed');
+    const px = new Map(feed.map(f => [String(f.pair).toLowerCase(), f]));
     const out = [];
-    for (let i = 0; i < geminiSymbols.length; i += 50) {
-      const rows = await Promise.all(geminiSymbols.slice(i, i + 50).map(async pair => {
-        let t2, t1;
-        for (let attempt = 0; attempt < 2 && !(t2 && t1); attempt++) {
-          try {
-            [t2, t1] = await Promise.all([
-              getJSON(`https://api.gemini.com/v2/ticker/${pair}`, { timeout: 20000 }),
-              getJSON(`https://api.gemini.com/v1/pubticker/${pair}`, { timeout: 20000 }),
-            ]);
-          } catch { t2 = t1 = null; }
+    for (let i = 0; i < geminiSymbols.length; i += 10) {
+      const rows = await Promise.all(geminiSymbols.slice(i, i + 10).map(async pair => {
+        const f = px.get(pair);
+        if (!f) return null;
+        let t1;
+        for (let attempt = 0; attempt < 2 && !t1; attempt++) {
+          try { t1 = await getJSON(`https://api.gemini.com/v1/pubticker/${pair}`, { timeout: 20000 }); }
+          catch { t1 = null; }
         }
-        if (!(t2 && t1)) return null;
-        if (t2?.result === 'error' || t1?.result === 'error' || !t1?.last) return null;
+        if (!t1 || t1?.result === 'error') return null;
         let b = null, q = null;
         for (const suffix of ['usdc', 'usdt', 'usd']) {
           if (pair.endsWith(suffix) && pair.length > suffix.length) { b = pair.slice(0, -suffix.length).toUpperCase(); q = suffix.toUpperCase(); break; }
         }
         if (!keep(sym(b), q)) return null;
-        const price = n(t1.last), open = n(t2.open), close = n(t2.close);
+        const price = n(f.price), chg = n(f.percentChange24h);
         const vol = t1.volume || {};
         return {
           venue: 'gemini', base: sym(b), quote: q, price,
           volBase: n(vol[b]), volQuote: n(vol[q]),
-          change24h: open ? (close / open - 1) * 100 : null,
+          change24h: chg != null ? chg * 100 : null,
           api: `https://api.gemini.com/v2/ticker/${pair}`,
           trade: `https://exchange.gemini.com/trade/${pair.toUpperCase()}`,
         };

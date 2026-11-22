@@ -1,0 +1,84 @@
+{
+ "status": "0000",
+ "data": {
+  "BTC": {
+   "opening_price": "82742000",
+   "closing_price": "80881000",
+   "min_price": "80347000",
+   "max_price": "82960000",
+   "units_traded": "314.08999432",
+   "acc_trade_value": "25715615373.23464",
+   "prev_closing_price": "82736000",
+   "units_traded_24H": "689.18789438",
+   "acc_trade_value_24H": "56254552694.81822",
+   "fluctate_24H": "890000",
+   "fluctate_rate_24H": "1.11"
+  },
+  "ETH": {
+   "opening_price": "2316000",
+   "closing_price": "2279000",
+   "min_price": "2252000",
+   "max_price": "2325000",
+   "units_traded": "6055.033794405323786655",
+   "acc_trade_value": "13886574291.077985059860165",
+   "prev_closing_price": "2316000",
+   "units_traded_24H": "14505.086700551662089863",
+   "acc_trade_value_24H": "33257078041.394849498205098",
+   "fluctate_24H": "30000",
+   "fluctate_rate_24H": "1.33"
+  },
+  "XRP": {
+   "opening_price": "1276",
+   "closing_price": "1255",
+   "min_price": "1246",
+   "max_price": "1285",
+   "units_traded": "15590956.98719186",
+   "acc_trade_value": "19742141170.43691178",
+   "prev_closing_price": "1276",
+   "units_traded_24H": "35349536.48630375",
+   "acc_trade_value_24H": "44353917722.78249406",
+   "fluctate_24H": "20",
+   "fluctate_rate_24H": "1.62"
+  },
+  "USDT": {
+   "opening_price": "1371",
+   "closing_price": "1370",
+   "min_price": "1366",
+   "max_price": "1373",
+   "units_traded": "20266501.31284733",
+   "acc_trade_value": "27746896104.06861454",
+   "prev_closing_price": "1372",
+   "units_traded_24H": "40141681.13387082",
+   "acc_trade_value_24H": "55073909501.51490316",
+   "fluctate_24H": "-4",
+   "fluctate_rate_24H": "-0.29"
+  },
+  "DOGE": {
+   "opening_price": "75.88",
+   "closing_price": "74.26",
+   "min_price": "73.49",
+   "max_price": "76.3",
+   "units_traded": "14763258.8401329",
+   "acc_trade_value": "1106955533.7688452808",
+   "prev_closing_price": "75.88",
+   "units_traded_24H": "30617897.13762953",
+   "acc_trade_value_24H": "2289525179.6826104071",
+   "fluctate_24H": "0.89",
+   "fluctate_rate_24H": "1.21"
+  },
+  "SOL": {
+   "opening_price": "96800",
+   "closing_price": "94800",
+   "min_price": "93900",
+   "max_price": "97300",
+   "units_traded": "46639.496415273",
+   "acc_trade_value": "4455192750.089867",
+   "prev_closing_price": "96800",
+   "units_traded_24H": "103913.362784432",
+   "acc_trade_value_24H": "9905405896.8598036",
+   "fluctate_24H": "1300",
+   "fluctate_rate_24H": "1.39"
+  },
+  "date": "1795333372235"
+ }
+}

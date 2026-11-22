@@ -17,6 +17,7 @@ function fakeFetch(body) {
 const bybitFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bybit-spot-tickers.json', import.meta.url), 'utf8'));
 const bitgetFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitget-spot-tickers.json', import.meta.url), 'utf8'));
 const cryptocomFixture = () => JSON.parse(readFileSync(new URL('./fixtures/cryptocom-tickers.json', import.meta.url), 'utf8'));
+const bithumbFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bithumb-tickers-krw.json', import.meta.url), 'utf8'));
 
 test('bybit: USD-quoted spot pairs with volume, change and links', async () => {
   const urls = fakeFetch(bybitFixture());
@@ -112,4 +113,55 @@ test('upbit: USDT-quoted pairs only, QUOTE-BASE market names', async () => {
 test('upbit: an empty market list fails the read', async () => {
   globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('/v1/market/all') ? [] : []), { status: 200 });
   await assert.rejects(READERS.upbit(), /no USDT markets/);
+});
+
+const KRW = 1370; // USDT-KRW in the fixture
+
+test('bithumb: KRW prices converted to USD, dead pairs and the circular USDT row dropped', async () => {
+  const urls = fakeFetch(bithumbFixture());
+  const ms = await READERS.bithumb();
+  assert.deepEqual(urls, ['https://api.bithumb.com/public/ticker/ALL_KRW']);
+  assert.ok(VENUES.bithumb);
+  // 'date' is not a coin; USDT would be 1.00 by construction, so neither is published.
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'ETH/USD', 'XRP/USD', 'DOGE/USD', 'SOL/USD']);
+  assert.ok(!ms.some(m => m.base === 'USDT'));
+  const btc = ms[0];
+  assert.equal(btc.venue, 'bithumb');
+  assert.equal(btc.quote, 'USD');
+  assert.ok(Math.abs(btc.price - 80881000 / KRW) < 1e-9);
+  assert.equal(btc.volBase, 689.18789438);
+  assert.ok(Math.abs(btc.volQuote - 56254552694.81822 / KRW) < 1e-6);
+  assert.equal(btc.change24h, 1.11);
+  assert.equal(btc.api, 'https://api.bithumb.com/public/ticker/BTC_KRW');
+  assert.equal(btc.trade, 'https://www.bithumb.com/react/trade/order/BTC-KRW');
+});
+
+test('bithumb: every published price is the won price over the USDT-KRW rate', async () => {
+  fakeFetch(bithumbFixture());
+  const fx = bithumbFixture().data;
+  const ms = await READERS.bithumb();
+  for (const m of ms) {
+    assert.ok(Math.abs(m.price - Number(fx[m.base].closing_price) / KRW) < 1e-9, `${m.base} not converted`);
+  }
+});
+
+test('bithumb: a pair with no 24h volume is dropped', async () => {
+  const f = bithumbFixture();
+  f.data.ETH.units_traded_24H = '0';
+  fakeFetch(f);
+  const ms = await READERS.bithumb();
+  assert.ok(!ms.some(m => m.base === 'ETH'));
+  assert.ok(ms.some(m => m.base === 'BTC'));
+});
+
+test('bithumb: a missing USDT-KRW price fails the read', async () => {
+  const f = bithumbFixture();
+  delete f.data.USDT;
+  fakeFetch(f);
+  await assert.rejects(READERS.bithumb(), /USDT-KRW/);
+});
+
+test('bithumb: an error answer (status not 0000) fails the read', async () => {
+  fakeFetch({ status: '5100', message: 'bad request' });
+  await assert.rejects(READERS.bithumb(), /bithumb status 5100/);
 });

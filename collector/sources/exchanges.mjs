@@ -25,6 +25,8 @@ export const VENUES = {
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
   cryptocom: { name: 'Crypto.com Exchange', type: 'Exchange', site: 'https://crypto.com/exchange' },
   upbit: { name: 'Upbit', type: 'Exchange', site: 'https://upbit.com' },
+  bitfinex: { name: 'Bitfinex', type: 'Exchange', site: 'https://www.bitfinex.com' },
+  bithumb: { name: 'Bithumb', type: 'Exchange', site: 'https://www.bithumb.com' },
 };
 
 let krakenPairs = null, krakenPairsAt = 0;
@@ -220,6 +222,43 @@ export const READERS = {
         change24h: n(v.signed_change_rate) != null ? n(v.signed_change_rate) * 100 : null,
         api: `https://api.upbit.com/v1/ticker?markets=${v.market}`,
         trade: `https://upbit.com/exchange?code=CRIX.UPBIT.${v.market}`,
+      });
+    }
+    return out;
+  },
+  // Bithumb's ALL_KRW ticker is quoted in KRW, so every price is divided by the USDT-KRW
+  // rate carried in the same answer. That rate is the only USD reference in the payload;
+  // if it is missing the read fails rather than publishing unconverted won numbers.
+  //
+  // The USDT row is dropped: its "USD price" would be closing_price/krwPerUsd, which is
+  // 1.0 by construction on every observation, so publishing it would put a constant
+  // fabricated number on the site. Bithumb's other USD stables (USDC, PYUSD, USD1) are
+  // genuine local prices and are kept.
+  //
+  // A row whose 24h volume is zero has no market behind it; Bithumb still carries a
+  // last price there, which would show as a live pair. Those are dropped.
+  async bithumb() {
+    const d = await getJSON('https://api.bithumb.com/public/ticker/ALL_KRW', { timeout: 25000 });
+    // Bithumb answers HTTP 200 with status 0000 on success and 5xxx on failure, and the
+    // payload always carries a non-coin 'date' key alongside the coins.
+    if (d.status !== '0000') throw new Error(`bithumb status ${d.status} ${d.message || ''}`.trim());
+    if (!d.data || typeof d.data !== 'object') throw new Error('bithumb bad response');
+    const krwPerUsd = n(d.data.USDT?.closing_price);
+    if (!krwPerUsd) throw new Error('bithumb USDT-KRW price missing');
+    const out = [];
+    for (const [base, v] of Object.entries(d.data)) {
+      if (!v || typeof v !== 'object') continue; // 'date'
+      if (base === 'USDT') continue; // circular: price would always be exactly 1.00
+      const price = n(v.closing_price), volBase = n(v.units_traded_24H);
+      if (price == null || !volBase) continue; // dead pair, no 24h trades
+      out.push({
+        venue: 'bithumb', base: sym(base), quote: 'USD', price: price / krwPerUsd,
+        volBase, volQuote: n(v.acc_trade_value_24H) != null ? n(v.acc_trade_value_24H) / krwPerUsd : null,
+        // fluctate_rate_24H is already a true trailing-24h percent; verified against
+        // fluctate_24H/(close-fluctate_24H) on all 483 live rows.
+        change24h: n(v.fluctate_rate_24H),
+        api: `https://api.bithumb.com/public/ticker/${base}_KRW`,
+        trade: `https://www.bithumb.com/react/trade/order/${base}-KRW`,
       });
     }
     return out;

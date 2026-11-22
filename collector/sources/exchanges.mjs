@@ -29,6 +29,12 @@ export const VENUES = {
 };
 
 let krakenPairs = null, krakenPairsAt = 0;
+let htxPairs = null, htxPairsAt = 0;
+const htxOpen = new Map();
+const HTX_SYMBOLS_TTL = 6 * 3600e3;
+const HTX_OPEN_TTL = 60e3;
+const HTX_OPEN_BATCH = 120;
+const HTX_WORKERS = 16;
 
 export const READERS = {
   async coinbase() {
@@ -225,23 +231,69 @@ export const READERS = {
     }
     return out;
   },
-  // HTX answers {"status":"ok","data":[...]} with lowercase symbols; amount is base
-  // volume, vol is quote volume. change24h derived from open -> close.
+  // HTX (formerly Huobi) answers HTTP 200 even on errors, so check status. The bulk
+  // ticker `open` is a natural-day (UTC+8) candle, not the rolling 24h open, so the 24h
+  // change is read from market/detail/merged and cached briefly; price and volume still
+  // refresh every tick from market/tickers.
   async htx() {
-    const d = await getJSON('https://api.htx.com/market/tickers', { timeout: 25000 });
-    if (d.status !== 'ok') throw new Error(`htx status ${d.status}`);
+    if (!htxPairs || Date.now() - htxPairsAt > HTX_SYMBOLS_TTL) {
+      const s = await getJSON('https://api.huobi.pro/v1/common/symbols', { timeout: 25000 });
+      if (s.status !== 'ok') throw new Error(`htx symbol list status ${s.status}`);
+      htxPairs = new Map();
+      for (const v of s.data || []) {
+        const base = String(v['base-currency'] || '').toUpperCase();
+        const quote = String(v['quote-currency'] || '').toUpperCase();
+        if (v.state !== 'online' || !base || !USD_QUOTES.has(quote)) continue;
+        if (!/^[\x20-\x7e]+$/.test(base)) continue;
+        htxPairs.set(v.symbol, { base: sym(base), quote });
+      }
+      htxPairsAt = Date.now();
+    }
+    if (!htxPairs.size) throw new Error('htx no USD markets');
+    const d = await getJSON('https://api.huobi.pro/market/tickers', { timeout: 25000 });
+    if (d.status !== 'ok') throw new Error(`htx status ${d.status} ${d['err-msg'] || ''}`.trim());
+    const live = (d.data || []).filter(v => htxPairs.has(v.symbol) && n(v.close) > 0 && n(v.vol) > 0);
+    if (!live.length) throw new Error('htx no live USD markets');
+    const stale = live.filter(v => {
+      const c = htxOpen.get(v.symbol);
+      return !c || Date.now() - c.at > HTX_OPEN_TTL;
+    });
+    const batch = htxOpen.size
+      ? stale.sort((a, b) => (htxOpen.get(a.symbol)?.at || 0) - (htxOpen.get(b.symbol)?.at || 0)).slice(0, HTX_OPEN_BATCH)
+      : stale;
+    let failed = 0;
+    const queue = batch.map(v => v.symbol);
+    const worker = async () => {
+      while (queue.length) {
+        const symbol = queue.pop();
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const r = await getJSON(`https://api.huobi.pro/market/detail/merged?symbol=${symbol}`, { timeout: 20000 });
+            if (r.status !== 'ok') throw new Error(`htx detail ${symbol} status ${r.status}`);
+            const open = n(r.tick && r.tick.open);
+            if (!(open > 0)) throw new Error(`htx detail ${symbol} bad open`);
+            htxOpen.set(symbol, { open, at: Date.now() });
+            break;
+          } catch (e) {
+            if (attempt) { htxOpen.delete(symbol); failed++; }
+          }
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: HTX_WORKERS }, worker));
     const out = [];
-    for (const v of d.data || []) {
-      const [b, q] = splitJoined(String(v.symbol).toUpperCase().replace(/[-_:]/g, ''));
-      if (!keep(b, q)) continue;
-      const price = n(v.close), open = n(v.open);
+    for (const v of live) {
+      const p = htxPairs.get(v.symbol), c = htxOpen.get(v.symbol);
+      if (!p || !c) continue;
+      const price = n(v.close), open = n(c.open);
       out.push({
-        venue: 'htx', base: b, quote: q, price, volBase: n(v.amount), volQuote: n(v.vol),
+        venue: 'htx', base: p.base, quote: p.quote, price, volBase: n(v.amount), volQuote: n(v.vol),
         change24h: price && open ? (price / open - 1) * 100 : null,
-        api: `https://api.htx.com/market/detail/merged?symbol=${v.symbol}`,
-        trade: `https://www.htx.com/trade/${b.toLowerCase()}_${q.toLowerCase()}`,
+        api: `https://api.huobi.pro/market/detail/merged?symbol=${v.symbol}`,
+        trade: `https://www.htx.com/trade/${p.base.toLowerCase()}_${p.quote.toLowerCase()}`,
       });
     }
+    if (!out.length) throw new Error(`htx no readable pairs (${failed} failed)`);
     return out;
   },
 };

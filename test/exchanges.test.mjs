@@ -114,26 +114,58 @@ test('upbit: an empty market list fails the read', async () => {
   await assert.rejects(READERS.upbit(), /no USDT markets/);
 });
 
-const htxFixture = () => JSON.parse(readFileSync(new URL('./fixtures/htx-tickers.json', import.meta.url), 'utf8'));
+const htxSymbols = () => JSON.parse(readFileSync(new URL('./fixtures/htx-symbols.json', import.meta.url), 'utf8'));
+const htxTickers = () => JSON.parse(readFileSync(new URL('./fixtures/htx-tickers.json', import.meta.url), 'utf8'));
+const htxMerged = () => JSON.parse(readFileSync(new URL('./fixtures/htx-merged.json', import.meta.url), 'utf8'));
 
-test('htx: USD-quoted spot pairs with volume, change and links', async () => {
-  const urls = fakeFetch(htxFixture());
+// HTX is asked three different things: the symbol list (which pair is base/quote), the
+// bulk tickers (live price and volume) and one detail/merged call per live pair (rolling
+// 24h open). Route by URL so the reader is exercised against the real response shapes.
+function htxFetch({ symbols = htxSymbols(), tickers = htxTickers(), merged = htxMerged() } = {}) {
+  const urls = [];
+  globalThis.fetch = async url => {
+    const u = String(url);
+    urls.push(u);
+    if (u.includes('/v1/common/symbols')) return new Response(JSON.stringify(symbols), { status: 200 });
+    if (u.includes('/market/tickers')) return new Response(JSON.stringify(tickers), { status: 200 });
+    if (u.includes('/market/detail/merged')) {
+      const symbol = u.split('symbol=')[1];
+      const tick = merged[symbol];
+      if (!tick) return new Response(JSON.stringify({ status: 'error', 'err-code': 'invalid-parameter', 'err-msg': 'invalid symbol' }), { status: 200 });
+      return new Response(JSON.stringify({ ch: `market.${symbol}.detail.merged`, status: 'ok', ts: 1795344449677, tick }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ status: 'error' }), { status: 200 });
+  };
+  return urls;
+}
+
+test('htx: pairs come from the symbol list, 24h change from the rolling window', async () => {
+  const urls = htxFetch();
   const ms = await READERS.htx();
-  assert.deepEqual(urls, ['https://api.htx.com/market/tickers']);
   assert.ok(VENUES.htx);
-  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USDT', 'ETH/USDC', 'XRP/USDT', 'ADA/USDT']);
-  assert.ok(ms.every(m => !/[-_:]/.test(m.base)));
+  // Kept: BTC/USDT, ETH/USDC, XRP/USDT. Dropped: ethbtc (not USD-quoted), deadusdt
+  // (offline), zigusdt (no volume), and adausdt (no rolling open in the fixture).
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USDT', 'ETH/USDC', 'XRP/USDT']);
+  for (const m of ms) assert.equal(m.venue, 'htx');
+
   const btc = ms[0];
-  assert.equal(btc.venue, 'htx');
-  assert.equal(btc.price, 60144.03);
-  assert.equal(btc.volBase, 8872.935555074027);
-  assert.equal(btc.volQuote, 518685070.6358959);
-  assert.ok(Math.abs(btc.change24h - (60144.03 / 59481.46 - 1) * 100) < 1e-9);
-  assert.equal(btc.api, 'https://api.htx.com/market/detail/merged?symbol=btcusdt');
+  assert.equal(btc.price, 59704.11);
+  assert.equal(btc.volBase, 4049.094462870142);
+  assert.equal(btc.volQuote, 241882596.9383995);
+  assert.ok(Math.abs(btc.change24h - (59704.11 / 57977 - 1) * 100) < 1e-9);
+  assert.ok(btc.change24h > 0, 'bulk day-open would make this negative');
+  assert.ok(Math.abs(((59704.11 / 59941.01) - 1) * 100 - btc.change24h) > 3, 'must not be the day-open value');
+  assert.equal(btc.api, 'https://api.huobi.pro/market/detail/merged?symbol=btcusdt');
   assert.equal(btc.trade, 'https://www.htx.com/trade/btc_usdt');
+  assert.equal(ms[1].trade, 'https://www.htx.com/trade/eth_usdc');
+
+  assert.equal(urls.filter(u => u.includes('/v1/common/symbols')).length, 1);
+  assert.equal(urls.filter(u => u.includes('/market/tickers')).length, 1);
+  const details = urls.filter(u => u.includes('/market/detail/merged')).map(u => u.split('symbol=')[1]);
+  assert.deepEqual([...new Set(details)].sort(), ['adausdt', 'btcusdt', 'ethusdc', 'xrpusdt']);
 });
 
-test('htx: an error answer (status not ok) fails the read', async () => {
-  fakeFetch({ status: 'error', data: [] });
+test('htx: a tickers error answer fails the read instead of returning nothing', async () => {
+  htxFetch({ tickers: { status: 'error', 'err-code': 'invalid-parameter', 'err-msg': 'bad request' } });
   await assert.rejects(READERS.htx(), /htx status error/);
 });

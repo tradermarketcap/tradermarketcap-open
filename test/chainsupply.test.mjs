@@ -106,3 +106,53 @@ test('sui: a broken API answer fails the read', async () => {
   try { await assert.rejects(readSupply({ method: 'sui' }), /bad sui/); }
   finally { restore(); }
 });
+
+// Fake Solana RPC: getTokenSupply returns the mint total, getTokenAccountsByOwner returns the
+// given holder balances. Response shapes captured from api.mainnet-beta.solana.com on 2026-11-22.
+function fakeSol({ total = '9999958592238969', holders = {} } = {}) {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    assert.ok(String(url).includes('solana'), 'only the Solana RPC host is called');
+    const req = JSON.parse(opts.body);
+    const reply = result => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) });
+    if (req.method === 'getTokenSupply') return reply({ value: { amount: total, decimals: 6, uiAmountString: (Number(total) / 1e6).toString() } });
+    assert.equal(req.method, 'getTokenAccountsByOwner');
+    const amt = holders[req.params[0]];
+    if (amt === undefined) return reply({ value: [] });
+    return reply({ value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmountString: String(amt) } } } } } }] });
+  };
+  return () => { globalThis.fetch = realFetch; };
+}
+
+const PYTH_RULE = {
+  method: 'tokens',
+  parts: [{ chain: 'sol', address: 'HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3' }],
+  circulating: false,
+  max: 10000000000,
+  exclude: [{ chain: 'sol', holder: 'Gx4MBPb1vqZLJajZmsKLg8fGw9ErhoKsR8LeKcCKFyak', reason: 'Pyth DAO Treasury (native SOL wallet)' }],
+};
+
+test('pyth: total is read from the mint and circulating stays unpublished', async () => {
+  const restore = fakeSol({ total: '9999958592238969', holders: { Gx4MBPb1vqZLJajZmsKLg8fGw9ErhoKsR8LeKcCKFyak: 51523852.59021 } });
+  try {
+    const s = await readSupply(PYTH_RULE);
+    assert.equal(s.circulating, null, 'circulating is withheld, never overstated');
+    assert.ok(Math.abs(s.total - 9999958592.238969) < 0.01);
+    assert.equal(s.max, 10000000000);
+    assert.equal(s.excluded.length, 1);
+    assert.equal(s.excluded[0].amount, 51523852.59021);
+    assert.ok(!JSON.stringify(s.excluded).includes('CO-PIP-105'), 'the reassigned publisher accounts are not cited as locked supply');
+    assert.equal(s.checked, true);
+    assert.equal(s.method, 'tokens');
+  } finally { restore(); }
+});
+
+test('pyth: a treasury wallet that has moved fails the read rather than guessing', async () => {
+  const restore = fakeSol({ total: '9999958592238969', holders: {} });
+  try {
+    const s = await readSupply(PYTH_RULE);
+    assert.equal(s.circulating, null, 'circulating stays withheld even when the treasury reads 0');
+    assert.equal(s.excluded.length, 0, 'a zero balance is not reported as an exclusion');
+    assert.ok(Math.abs(s.total - 9999958592.238969) < 0.01);
+  } finally { restore(); }
+});

@@ -199,5 +199,6 @@
   "digibyte": {"symbol": "DGB", "name": "DigiByte", "supply": {"method": "cryptoid", "coin": "dgb", "max": 21000000000}},
   "nervos-network": {"symbol": "CKB", "name": "Nervos Network", "supply": {"method": "nervos"}},
   "toncoin": {"symbol": "TON", "name": "Toncoin", "supply": {"method": "ton"}},
-  "jupiter": {"symbol":"JUP", "name":"Jupiter", "supply":{"method":"jupiter", "mint":"JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"}}
+  "jupiter": {"symbol":"JUP", "name":"Jupiter", "supply":{"method":"jupiter", "mint":"JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"}},
+  "algorand": {"symbol": "ALGO", "name": "Algorand", "supply": {"method": "algorand", "max": 10000000000}}
 }

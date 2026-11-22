@@ -302,3 +302,86 @@ test('pyth: a treasury wallet that has moved fails the read rather than guessing
     assert.ok(Math.abs(s.total - 9999958592.238969) < 0.01);
   } finally { restore(); }
 });
+
+// Fake AlgoNode endpoints: /v2/ledger/supply and /v2/accounts/<addr>?exclude=all.
+// Response shapes captured from mainnet-api.algonode.cloud on 2026-11-22.
+function fakeAlgo({
+  totalMoney = 9821633609940000,
+  balances = {},
+  failAddr = null,
+  failStatus = 404,
+} = {}) {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async url => {
+    const u = String(url);
+    assert.ok(u.startsWith('https://mainnet-api.algonode.cloud/v2/'), 'only AlgoNode mainnet API is called');
+    if (u.endsWith('/v2/ledger/supply')) {
+      return { ok: true, status: 200, json: async () => ({ 'total-money': totalMoney, 'online-money': 1500000000000000 }) };
+    }
+    const m = u.match(/\/v2\/accounts\/([A-Z2-7]+)\?exclude=all$/);
+    assert.ok(m, 'unexpected AlgoNode URL ' + u);
+    const addr = m[1];
+    if (failAddr === addr) {
+      return { ok: false, status: failStatus, text: async () => 'not found', json: async () => ({ message: 'not found' }) };
+    }
+    // Closed/empty accounts return HTTP 200 with amount: 0 on algod.
+    const amount = Object.prototype.hasOwnProperty.call(balances, addr) ? balances[addr] : 0;
+    return { ok: true, status: 200, json: async () => ({ address: addr, amount }) };
+  };
+  return () => { globalThis.fetch = prevFetch; };
+}
+
+test('algorand: applies Q2 2026 report floor when larger than live sum of 74 published addresses', async () => {
+  const { algorand } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  assert.equal(algorand.symbol, 'ALGO');
+  const feeSink = 'Y76M3MSY6DKBRHBL7C3NNDXGS5IIMQVQVUAB6MP4XEMMGVF2QWNPL226CA';
+  const treasury = 'RW466IANOKLA36QARHMBX5VCY3PYDR3H2N5XHPDARG6UBOKCIK7WAMLSCA';
+  const restore = fakeAlgo({
+    balances: {
+      [treasury]: 680000000000000, // 680M ALGO
+      [feeSink]: 10000000000000,   // 10M ALGO
+    },
+  });
+  try {
+    const s = await readSupply(algorand.supply);
+    assert.equal(s.checked, true);
+    assert.equal(s.max, 10000000000);
+    assert.ok(Math.abs(s.total - 9821633609.94) < 0.01);
+    assert.ok(Math.abs(s.circulating - (9821633609.94 - 1035603000)) < 0.01);
+    const exSum = s.excluded.reduce((sum, e) => sum + e.amount, 0);
+    assert.ok(Math.abs(exSum - 1035603000) < 0.01, 'excluded entries sum to applied Q2 2026 report floor');
+    const sinkRow = s.excluded.find(e => e.holder === feeSink);
+    assert.ok(sinkRow);
+    assert.equal(sinkRow.reason, 'Protocol fee sink (listed by the Foundation)');
+    assert.equal(sinkRow.src, `https://allo.info/account/${feeSink}`);
+    assert.ok(s.note.includes('Applied: Q2 2026 report floor.'));
+  } finally { restore(); }
+});
+
+test('algorand: uses live sum when published addresses exceed the Q2 2026 report floor', async () => {
+  const treasury = 'RW466IANOKLA36QARHMBX5VCY3PYDR3H2N5XHPDARG6UBOKCIK7WAMLSCA';
+  const restore = fakeAlgo({
+    balances: { [treasury]: 1200000000000000 }, // 1,200M ALGO > 1,035.603M floor
+  });
+  try {
+    const s = await readSupply({ method: 'algorand', max: 10000000000 });
+    assert.ok(Math.abs(s.circulating - (9821633609.94 - 1200000000)) < 0.01);
+    assert.equal(s.excluded.length, 1);
+    assert.equal(s.excluded[0].amount, 1200000000);
+    assert.ok(s.note.includes('Applied: live published addresses sum.'));
+  } finally { restore(); }
+});
+
+test('algorand: HTTP 404 on an account or bad ledger supply fails the read instead of counting 0', async () => {
+  let restore = fakeAlgo({ failAddr: 'IHYR5OZGAIRSCDCNQJVFOPAOJT2SPG3YXAE3GGJPZRI6JV2GQSJAYG5NUY', failStatus: 404 });
+  try { await assert.rejects(readSupply({ method: 'algorand' }), /404/); }
+  finally { restore(); }
+
+  restore = fakeAlgo({ balances: { RW466IANOKLA36QARHMBX5VCY3PYDR3H2N5XHPDARG6UBOKCIK7WAMLSCA: null } });
+  try { await assert.rejects(readSupply({ method: 'algorand' }), /bad Algorand account balance/); }
+  finally { restore(); }
+
+  restore = fakeAlgo({ totalMoney: 0 });
+  try { await assert.rejects(readSupply({ method: 'algorand' }), /bad Algorand ledger supply/); }
+  finally { restore(); }
+});

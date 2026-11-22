@@ -1,0 +1,90 @@
+{
+  "status": "ok",
+  "ts": 1763700000000,
+  "data": [
+    {
+      "symbol": "btcusdt",
+      "open": 59941.01,
+      "high": 60562.67,
+      "low": 58797.46,
+      "close": 59165.49,
+      "amount": 3744.262615998276,
+      "vol": 223324948.0057205,
+      "count": 313566,
+      "bid": 59166.34,
+      "bidSize": 0.030119,
+      "ask": 59170.23,
+      "askSize": 0.030119
+    },
+    {
+      "symbol": "ethusdc",
+      "open": 1684.89,
+      "high": 1684.89,
+      "low": 1665.84,
+      "close": 1665.84,
+      "amount": 5.940662374349138,
+      "vol": 9900.76053184,
+      "count": 15,
+      "bid": 1664.25,
+      "bidSize": 0.075,
+      "ask": 1669.06,
+      "askSize": 1.2595
+    },
+    {
+      "symbol": "ethbtc",
+      "open": 0.028113,
+      "high": 0.028167,
+      "low": 0.027999,
+      "close": 0.028167,
+      "amount": 395.9357,
+      "vol": 11.0862560912,
+      "count": 535,
+      "bid": 0.028043,
+      "bidSize": 0.6383,
+      "ask": 0.028275,
+      "askSize": 1.0661
+    },
+    {
+      "symbol": "btcusd",
+      "open": 60010.5,
+      "high": 60733.1,
+      "low": 58901.0,
+      "close": 59222.2,
+      "amount": 812.4451,
+      "vol": 48102334.117,
+      "count": 41288,
+      "bid": 59221.9,
+      "bidSize": 0.0912,
+      "ask": 59224.4,
+      "askSize": 0.0455
+    },
+    {
+      "symbol": "trx3susdt",
+      "open": 0,
+      "high": 0,
+      "low": 0,
+      "close": 0,
+      "amount": 0,
+      "vol": 0,
+      "count": 0,
+      "bid": 0,
+      "bidSize": 0,
+      "ask": 0,
+      "askSize": 0
+    },
+    {
+      "symbol": "adausdt",
+      "open": 0.144381,
+      "high": 0.146076,
+      "low": 0.141102,
+      "close": 0.141891,
+      "amount": 11083015.980499486,
+      "vol": 1578720.206168928,
+      "count": 26978,
+      "bid": 0.141717,
+      "bidSize": 221.65,
+      "ask": 0.142099,
+      "askSize": 133.8639
+    }
+  ]
+}

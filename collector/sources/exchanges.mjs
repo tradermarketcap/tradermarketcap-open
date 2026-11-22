@@ -25,6 +25,7 @@ export const VENUES = {
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
   cryptocom: { name: 'Crypto.com Exchange', type: 'Exchange', site: 'https://crypto.com/exchange' },
   upbit: { name: 'Upbit', type: 'Exchange', site: 'https://upbit.com' },
+  htx: { name: 'HTX', type: 'Exchange', site: 'https://www.htx.com' },
 };
 
 let krakenPairs = null, krakenPairsAt = 0;
@@ -220,6 +221,26 @@ export const READERS = {
         change24h: n(v.signed_change_rate) != null ? n(v.signed_change_rate) * 100 : null,
         api: `https://api.upbit.com/v1/ticker?markets=${v.market}`,
         trade: `https://upbit.com/exchange?code=CRIX.UPBIT.${v.market}`,
+      });
+    }
+    return out;
+  },
+  // HTX (formerly Huobi) answers HTTP 200 even on errors, so check status. Symbols are
+  // lowercase joined (btcusdt); `amount` is base volume, `vol` is quote volume, `close`
+  // is the last price and `open` the 24h open, so change is derived from those.
+  async htx() {
+    const d = await getJSON('https://api.huobi.pro/market/tickers', { timeout: 25000 });
+    if (d.status !== 'ok') throw new Error(`htx status ${d.status} ${d['err-msg'] || ''}`.trim());
+    const out = [];
+    for (const v of d.data || []) {
+      const [b, q] = splitJoined(String(v.symbol).toUpperCase());
+      if (!keep(b, q)) continue;
+      const price = n(v.close), open = n(v.open);
+      out.push({
+        venue: 'htx', base: sym(b), quote: q, price, volBase: n(v.amount), volQuote: n(v.vol),
+        change24h: price && open ? (price / open - 1) * 100 : null,
+        api: `https://api.huobi.pro/market/detail/merged?symbol=${v.symbol}`,
+        trade: `https://www.htx.com/en-us/exchange/${b.toLowerCase()}_${q.toLowerCase()}`,
       });
     }
     return out;

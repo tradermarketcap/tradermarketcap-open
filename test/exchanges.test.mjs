@@ -113,3 +113,36 @@ test('upbit: an empty market list fails the read', async () => {
   globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('/v1/market/all') ? [] : []), { status: 200 });
   await assert.rejects(READERS.upbit(), /no USDT markets/);
 });
+
+const htxFixture = () => JSON.parse(readFileSync(new URL('./fixtures/htx-market-tickers.json', import.meta.url), 'utf8'));
+
+test('htx: USD-quoted spot pairs with volume, change and links', async () => {
+  const urls = fakeFetch(htxFixture());
+  const ms = await READERS.htx();
+  assert.deepEqual(urls, ['https://api.huobi.pro/market/tickers']);
+  assert.ok(VENUES.htx);
+  // ethbtc (BTC quote) is dropped; USD/USDT/USDC pairs are kept. Leveraged tokens like
+  // TRX3S are kept here (the collector's notCoin() filter drops them downstream).
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USDT', 'ETH/USDC', 'BTC/USD', 'TRX3S/USDT', 'ADA/USDT']);
+  const btc = ms[0];
+  assert.equal(btc.venue, 'htx');
+  assert.equal(btc.price, 59165.49);
+  assert.equal(btc.volBase, 3744.262615998276);
+  assert.equal(btc.volQuote, 223324948.0057205);
+  assert.ok(Math.abs(btc.change24h - (59165.49 / 59941.01 - 1) * 100) < 1e-9);
+  assert.equal(btc.api, 'https://api.huobi.pro/market/detail/merged?symbol=btcusdt');
+  assert.equal(btc.trade, 'https://www.htx.com/en-us/exchange/btc_usdt');
+  assert.ok(ms[1].change24h < 0);
+  // A plain USD quote is kept too, with its own api + trade links.
+  const btcUsd = ms[2];
+  assert.equal(btcUsd.quote, 'USD');
+  assert.equal(btcUsd.api, 'https://api.huobi.pro/market/detail/merged?symbol=btcusd');
+  assert.equal(btcUsd.trade, 'https://www.htx.com/en-us/exchange/btc_usd');
+  // A pair with open=0 (new listing) yields change24h null, not NaN.
+  assert.ok(ms.every(m => Number.isFinite(m.price) && Number.isFinite(m.volBase) && Number.isFinite(m.volQuote)));
+});
+
+test('htx: an error answer (status not ok) fails the read', async () => {
+  fakeFetch({ status: 'error', 'err-code': 'invalid-parameter', 'err-msg': 'invalid symbol', data: [] });
+  await assert.rejects(READERS.htx(), /status error/);
+});

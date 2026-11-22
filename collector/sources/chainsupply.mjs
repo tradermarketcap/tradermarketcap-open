@@ -313,6 +313,38 @@ const METHODS = {
       excluded: [{ reason: 'Locked allocations (foundation, community reserve, early supporters)', amount: total - circ, src: 'https://blog.sui.io/token-release-schedule/' }],
       note: 'Total from Sui GraphQL; circulating from the official Sui Explorer circulation API (Sui JSON-RPC is deprecated). Stake rewards are circulating when paid' };
   },
+  // Quant (QNT): the contract's totalSupply() is NOT the live supply and must not be published as one.
+  // The counter was seeded with the 45,467,000 planned cap in 2018 and never decremented: the September 2018
+  // burn moved 9,545,765.95 unsold QNT to the contract's own address instead of reducing the count, so the
+  // counter still reads 45,467,000 while only about 24.16M was ever minted. Quant's own burn announcement
+  // publishes the post-burn total: 14,612,493.080826178 QNT (9,964,259.03181537 public + 4,648,234.049010808
+  // company). We publish that disclosed total and subtract only balances that can provably never move again:
+  // the remainder parked at the contract address (its balance minus the disclosed burn) and the burn address.
+  // QNT has no contractual company, team or foundation lock, so company holdings count as circulating.
+  async quant(r) {
+    const token = r.address;
+    const disclosedTotal = Number(r.disclosedTotal);
+    const burned = Number(r.burnedAt2018);
+    if (!(disclosedTotal > 0) || !(burned > 0)) throw new Error('quant: rule needs disclosedTotal and burnedAt2018');
+    const [rawCounter, atContract, atBurn] = await Promise.all([
+      erc20TotalSupply('eth', token),
+      erc20Balance('eth', token, token),
+      erc20Balance('eth', token, BURN),
+    ]);
+    // If the counter ever stops being the pre-burn artefact, this rule's reasoning is stale: fail rather than guess.
+    if (!(rawCounter > disclosedTotal * 1.1)) throw new Error(`quant: totalSupply() ${rawCounter} is not the pre-burn counter`);
+    // The burned tokens have to still be sitting at the contract address, or the burn was moved and our arithmetic is wrong.
+    if (!(atContract >= burned)) throw new Error(`quant: burn not at contract address (${atContract} < ${burned})`);
+    const stray = atContract - burned;
+    const excluded = [
+      { reason: 'Burned 2018 remainder parked at the token contract (no contract function can move it)', holder: token, amount: stray, src: holderLink({ chain: 'eth', address: token }, token) },
+      { reason: 'Burn address', holder: BURN, amount: atBurn, src: holderLink({ chain: 'eth', address: token }, BURN) },
+    ].filter(e => e.amount > 0);
+    const circulating = disclosedTotal - excluded.reduce((s, e) => s + e.amount, 0);
+    if (!(circulating > 0)) throw new Error('quant: bad circulating supply');
+    return { circulating, total: disclosedTotal, src: 'https://x.com/quantnetwork/status/1043093247839678464', excluded,
+      note: `Total is Quant's own post-burn disclosure (14 Sep 2018), not totalSupply(): the contract counter still reads ${rawCounter.toLocaleString('en-US')} because the burn moved tokens to the contract address instead of decrementing it. Only balances that can never move are excluded; QNT has no contractual team or company lock.` };
+  },
   async extra() {
     return extraSupply();
   },

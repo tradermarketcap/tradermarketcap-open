@@ -195,5 +195,17 @@
   "decred": {"symbol": "DCR", "name": "Decred", "supply": {"method": "decred", "max": 21000000}},
   "ravencoin": {"symbol": "RVN", "name": "Ravencoin", "supply": {"method": "btc-schedule", "heightUrl": "https://blockbook.ravencoin.org/api/", "heightField": "blockbook.bestHeight", "reward": 5000, "halving": 2100000, "schedule": "Ravencoin", "src": "https://blockbook.ravencoin.org", "max": 21000000000}},
   "digibyte": {"symbol": "DGB", "name": "DigiByte", "supply": {"method": "cryptoid", "coin": "dgb", "max": 21000000000}},
-  "nervos-network": {"symbol": "CKB", "name": "Nervos Network", "supply": {"method": "nervos"}}
+  "nervos-network": {"symbol": "CKB", "name": "Nervos Network", "supply": {"method": "nervos"}},
+  "quant": {
+    "symbol": "QNT",
+    "name": "Quant",
+    "supply": {
+      "method": "quant",
+      "address": "0x4a220E6096B25EADb88358cb44068A3248254675",
+      "disclosedTotal": 14612493.080826178,
+      "burnedAt2018": 9545765.95,
+      "max": 14612493.080826178,
+      "note": "Total is Quant's own post-burn disclosure (14 Sep 2018): 14,612,493.080826178 QNT. The contract's totalSupply() still reads 45,467,000 because the 2018 burn parked 9,545,765.95 unsold QNT at the contract address instead of decrementing the counter, so that higher figure is a pre-burn artefact and is never published as supply. QNT has no contractual team, company or foundation lock, so company holdings count as circulating; only the parked burn and the burn address are excluded."
+    }
+  }
 }

@@ -16,6 +16,7 @@ function fakeFetch(body) {
 
 const bybitFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bybit-spot-tickers.json', import.meta.url), 'utf8'));
 const bitgetFixture = () => JSON.parse(readFileSync(new URL('./fixtures/bitget-spot-tickers.json', import.meta.url), 'utf8'));
+const geminiFeedFixture = () => JSON.parse(readFileSync(new URL('./fixtures/gemini-pricefeed.json', import.meta.url), 'utf8'));
 
 test('bybit: USD-quoted spot pairs with volume, change and links', async () => {
   const urls = fakeFetch(bybitFixture());
@@ -59,5 +60,34 @@ test('bitget: USD-quoted spot pairs with volume, change and links', async () => 
 test('bitget: an error answer (code not 00000) fails the read', async () => {
   fakeFetch({ code: '40017', msg: 'params error', data: [] });
   await assert.rejects(READERS.bitget(), /code 40017/);
+});
+
+// Gemini answers v1/pricefeed with [{pair, price, percentChange24h}] and v1/pubticker per symbol
+// with {last, volume: {BASE: .., QUOTE: ..}}. The stablecoin pairs are the trap: their names end in
+// "USD", so a naive suffix match turns SOLRLUSD into base "SOLRL" and BTCGUSD into "BTCG".
+test('gemini: stablecoin-quoted pairs are dropped, not given a fabricated base', async () => {
+  const urls = [];
+  globalThis.fetch = async url => {
+    const u = String(url); urls.push(u);
+    if (u === 'https://api.gemini.com/v1/pricefeed') return new Response(JSON.stringify(geminiFeedFixture()), { status: 200 });
+    const m = u.match(/\/v1\/pubticker\/([a-z0-9]+)$/);
+    if (!m) throw new Error('unexpected url ' + u);
+    const volume = { btc: '221.237407', usd: '13113017.65', eth: '940.5', usdt: '1590000', sol: '5210.9', usdc: '360100' };
+    return new Response(JSON.stringify({ last: '1', volume }), { status: 200 });
+  };
+  const ms = await READERS.gemini();
+  assert.equal(urls[0], 'https://api.gemini.com/v1/pricefeed');
+  assert.ok(VENUES.gemini);
+  // Only genuinely USD/USDT/USDC-quoted pairs survive; the GUSD/RLUSD pairs are dropped rather
+  // than given a fabricated base. Fiat crosses (EUR/USD) pass through, exactly as the Kraken
+  // reader already lets them, so this reader adds no new filtering rule of its own.
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'ETH/USDT', 'SOL/USDC', 'EUR/USD']);
+  // No live pair may carry a base that is another ticker glued to a stablecoin name.
+  for (const m of ms) assert.ok(!/^(SOLRL|ETHRL|BTCG|MONG|DRIFTRL)$/.test(m.base), `fabricated base ${m.base}`);
+});
+
+test('gemini: a non-list answer fails the read instead of reporting no markets', async () => {
+  fakeFetch({ result: 'error', reason: 'RateLimit' });
+  await assert.rejects(READERS.gemini(), /bad response/);
 });
 

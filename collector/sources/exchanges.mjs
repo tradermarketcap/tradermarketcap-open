@@ -23,7 +23,22 @@ export const VENUES = {
   binanceus: { name: 'Binance.US', type: 'Exchange', site: 'https://www.binance.us' },
   bybit: { name: 'Bybit', type: 'Exchange', site: 'https://www.bybit.com' },
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
+  gemini: { name: 'Gemini', type: 'Exchange', site: 'https://www.gemini.com' },
 };
+
+// Gemini lists stablecoin-quoted pairs too (btcgusd, ethrlusd). Those pair names end in "USD",
+// so splitJoined() would keep the stablecoin ticker glued to the base (SOLRLUSD -> base "SOLRL",
+// BTCGUSD -> "BTCG") and publish a ticker that does not exist. Match the longest quote first and
+// let keep() drop them, so no fabricated base ever reaches the site.
+const GEMINI_QUOTES = ['USDT', 'USDC', 'GUSD', 'RLUSD', 'USD'];
+
+function geminiPair(name) {
+  const s = String(name || '').toUpperCase();
+  for (const q of GEMINI_QUOTES) {
+    if (s.endsWith(q) && s.length > q.length) return { base: s.slice(0, -q.length), quote: q };
+  }
+  return null;
+}
 
 let krakenPairs = null, krakenPairsAt = 0;
 
@@ -179,5 +194,45 @@ export const READERS = {
       });
     }
     return out;
+  },
+  // Gemini has no bulk ticker that carries volume: one v1/pricefeed call gives every pair with its
+  // price and 24h change (already a percent), then each kept pair needs one v1/pubticker call for
+  // volume. Fan out in bounded batches. A pair whose pubticker fails keeps a null volume rather
+  // than failing the whole read; an answer that is not a list of pairs fails loudly.
+  async gemini() {
+    const feed = await getJSON('https://api.gemini.com/v1/pricefeed', { timeout: 25000 });
+    if (!Array.isArray(feed) || feed.length === 0) throw new Error('gemini bad response');
+    const rows = [];
+    for (const p of feed) {
+      const pair = geminiPair(p?.pair);
+      if (!pair) continue;
+      const base = sym(pair.base), quote = pair.quote;
+      if (!keep(base, quote)) continue; // GUSD/RLUSD and fiat crosses are dropped here
+      rows.push({ symbol: String(p.pair).toLowerCase(), base, quote, price: n(p.price), change24h: n(p.percentChange24h) });
+    }
+    if (!rows.length) throw new Error('gemini no markets');
+
+    const volumes = new Map();
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < rows.length) {
+        const r = rows[cursor++];
+        try {
+          const t = await getJSON(`https://api.gemini.com/v1/pubticker/${r.symbol}`, { timeout: 15000 });
+          volumes.set(r.symbol, t && typeof t === 'object' && t.volume ? t.volume : null);
+        } catch { volumes.set(r.symbol, null); }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(6, rows.length) }, worker));
+
+    return rows.map(r => {
+      const vol = volumes.get(r.symbol) || {};
+      return {
+        venue: 'gemini', base: r.base, quote: r.quote, price: r.price,
+        volBase: n(vol[r.base]), volQuote: n(vol[r.quote]), change24h: r.change24h,
+        api: `https://api.gemini.com/v1/pubticker/${r.symbol}`,
+        trade: `https://exchange.gemini.com/trade/${r.symbol.toUpperCase()}`,
+      };
+    });
   },
 };

@@ -7,6 +7,8 @@ import { USD_QUOTES } from '../../src/model.mjs';
 const ALIAS = { XBT: 'BTC', XDG: 'DOGE' };
 const sym = s => ALIAS[s] || s;
 const keep = (base, quote) => base && USD_QUOTES.has(quote);
+// Gemini fiat crosses (eurusd, audusdc) are currency pairs, not coins.
+const GEMINI_FIAT = new Set(['AUD', 'EUR', 'GBP', 'SGD', 'HKD', 'CAD', 'CHF', 'JPY', 'NZD']);
 
 function splitJoined(s) {
   for (const q of ['USDT', 'USDC', 'USD']) if (s.endsWith(q) && s.length > q.length) return [s.slice(0, -q.length), q];
@@ -231,16 +233,18 @@ export const READERS = {
   // and the read fails if nothing comes back.
   async gemini() {
     if (!geminiSymbols || Date.now() - geminiSymbolsAt > 6 * 3600e3) {
-      geminiSymbols = (await getJSON('https://api.gemini.com/v1/symbols', { timeout: 25000 }))
-        .filter(s => /(?:usdc|usdt|usd)$/.test(s));
-      // 'Xgusd' is Gemini's X/GUSD market; GUSD is not a quote we keep, and when
-      // the plain 'Xusd' sibling exists the g-form would surface as a bogus 'XG'
-      // base quoting the same price. Drop the twin; real G-ending bases (PAXG,
-      // USDG) have no sibling and are kept.
-      const symSet = new Set(geminiSymbols);
-      geminiSymbols = geminiSymbols.filter(pair => {
-        const m = pair.match(/^(.*?)(usdc|usdt|usd)$/);
-        return !(m && m[1].length > 1 && m[1].endsWith('g') && symSet.has(m[1].slice(0, -1) + m[2]));
+      const all = await getJSON('https://api.gemini.com/v1/symbols', { timeout: 25000 });
+      // Gemini's GUSD and RLUSD books also end in "usd" (btcgusd, ethrlusd), so a
+      // plain USD-suffix split would glue the stablecoin to the base (BTCG/USD,
+      // ETHRL/USD). Match the longest quote first; only genuine USD/USDT/USDC
+      // quotes survive, and fiat crosses are not coins.
+      geminiSymbols = all.filter(s => {
+        for (const q of ['usdt', 'usdc', 'rlusd', 'gusd', 'usd']) {
+          if (s.length > q.length && s.endsWith(q)) {
+            return (q === 'usdt' || q === 'usdc' || q === 'usd') && !GEMINI_FIAT.has(s.slice(0, -q.length).toUpperCase());
+          }
+        }
+        return false;
       });
       geminiSymbolsAt = Date.now();
     }

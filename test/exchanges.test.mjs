@@ -132,7 +132,10 @@ test('gemini: USD-quoted pairs with volume, change and links', async () => {
   assert.ok(VENUES.gemini);
   assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'ETH/USDT', 'SOL/USDC', 'AAVE/USD']);
   // 'aavegusd' is Gemini's AAVE/GUSD twin of 'aaveusd'; it must not surface as AAVEG/USD.
-  assert.ok(ms.every(m => m.base !== 'AAVEG'));
+  // 'ethrlusd'/'solrlusd'/'btcgusd' are RLUSD/GUSD-quoted books that end in "usd";
+  // they must be dropped as stablecoin quotes, not emitted as ETHRL/SOLRL/BTCG bases.
+  // 'eurusd'/'audusdc' are fiat crosses, not coins; 'paxgusd' parses as PA/GUSD.
+  assert.ok(ms.every(m => !['AAVEG', 'ETHRL', 'SOLRL', 'BTCG', 'EUR', 'AUD', 'PAXG'].includes(m.base)));
   const btc = ms[0];
   assert.equal(btc.venue, 'gemini');
   assert.equal(btc.price, 59823.09);

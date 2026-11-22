@@ -57,9 +57,11 @@ async function tokenTotal(p) {
 }
 
 const METHODS = {
+  // Read /thorchain/supply from THORNode through Liquify's public gateway. THORChain excludes
+  // only the protocol reserve from circulation, so bonded RUNE and RUNE in liquidity pools count.
   async thorchain() {
     const src = 'https://gateway.liquify.com/chain/thorchain_api/thorchain/supply';
-    const { total, circulating, locked } = await getJSON(src, { headers: { 'X-Client-ID': 'TraderMarketCap' } });
+    const { total, circulating, locked } = await getJSON(src);
     const reserve = locked?.reserve;
     if (![total, circulating, reserve].every(value => Number.isSafeInteger(value) && value >= 0) || total === 0) {
       throw new Error('invalid THORNode RUNE supply');

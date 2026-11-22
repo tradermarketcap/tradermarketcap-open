@@ -234,15 +234,22 @@ export const READERS = {
   async gemini() {
     if (!geminiSymbols || Date.now() - geminiSymbolsAt > 6 * 3600e3) {
       const all = await getJSON('https://api.gemini.com/v1/symbols', { timeout: 25000 });
+      const symSet = new Set(all);
       // Gemini's GUSD and RLUSD books also end in "usd" (btcgusd, ethrlusd), so a
       // plain USD-suffix split would glue the stablecoin to the base (BTCG/USD,
       // ETHRL/USD). Match the longest quote first; only genuine USD/USDT/USDC
-      // quotes survive, and fiat crosses are not coins.
+      // quotes survive, and fiat crosses are not coins. The exception is a base
+      // that also trades usdc/usdt: 'paxgusd' is PAXG/USD and 'usdgusd' is
+      // USDG/USD, proven by their paxgusdc/usdgusdc siblings, not PA/GUSD.
       geminiSymbols = all.filter(s => {
         for (const q of ['usdt', 'usdc', 'rlusd', 'gusd', 'usd']) {
-          if (s.length > q.length && s.endsWith(q)) {
-            return (q === 'usdt' || q === 'usdc' || q === 'usd') && !GEMINI_FIAT.has(s.slice(0, -q.length).toUpperCase());
+          if (!(s.length > q.length && s.endsWith(q))) continue;
+          if (q === 'gusd' || q === 'rlusd') {
+            const baseU = s.slice(0, -3);
+            const proven = symSet.has(baseU + 'usdc') || symSet.has(baseU + 'usdt');
+            return proven && !GEMINI_FIAT.has(baseU.toUpperCase());
           }
+          return (q === 'usdt' || q === 'usdc' || q === 'usd') && !GEMINI_FIAT.has(s.slice(0, -q.length).toUpperCase());
         }
         return false;
       });

@@ -11,5 +11,8 @@
   "btcgusd",
   "eurusd",
   "audusdc",
-  "paxgusd"
+  "paxgusd",
+  "paxgusdc",
+  "usdgusd",
+  "usdgusdc"
 ]

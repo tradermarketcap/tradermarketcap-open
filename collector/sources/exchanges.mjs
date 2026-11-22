@@ -228,7 +228,7 @@ export const READERS = {
   // HTX answers {"status":"ok","data":[...]} with lowercase symbols; amount is base
   // volume, vol is quote volume. change24h derived from open -> close.
   async htx() {
-    const d = await getJSON('https://api.huobi.pro/market/tickers', { timeout: 25000 });
+    const d = await getJSON('https://api.htx.com/market/tickers', { timeout: 25000 });
     if (d.status !== 'ok') throw new Error(`htx status ${d.status}`);
     const out = [];
     for (const v of d.data || []) {
@@ -238,7 +238,7 @@ export const READERS = {
       out.push({
         venue: 'htx', base: b, quote: q, price, volBase: n(v.amount), volQuote: n(v.vol),
         change24h: price && open ? (price / open - 1) * 100 : null,
-        api: `https://api.huobi.pro/market/detail/merged?symbol=${v.symbol}`,
+        api: `https://api.htx.com/market/detail/merged?symbol=${v.symbol}`,
         trade: `https://www.htx.com/trade/${b.toLowerCase()}_${q.toLowerCase()}`,
       });
     }

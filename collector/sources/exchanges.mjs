@@ -25,6 +25,7 @@ export const VENUES = {
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
   cryptocom: { name: 'Crypto.com Exchange', type: 'Exchange', site: 'https://crypto.com/exchange' },
   upbit: { name: 'Upbit', type: 'Exchange', site: 'https://upbit.com' },
+  bithumb: { name: 'Bithumb', type: 'Exchange', site: 'https://www.bithumb.com' },
 };
 
 let krakenPairs = null, krakenPairsAt = 0;
@@ -222,6 +223,40 @@ export const READERS = {
         trade: `https://upbit.com/exchange?code=CRIX.UPBIT.${v.market}`,
       });
     }
+    return out;
+  },
+  // Bithumb quotes everything in KRW. /public/ticker/ALL_KRW returns every market
+  // in one shot; each coin carries closing_price, units_traded_24H (base volume),
+  // acc_trade_value_24H (quote volume in KRW) and fluctate_rate_24H (24h % change,
+  // relative to the previous close). We derive a KRW->USD rate from the USDT-KRW
+  // market in the same answer (USDT ~ 1 USD) and convert every KRW figure to USD,
+  // emitting quote 'USD' so the aggregator prices it without a KRW feed.
+  async bithumb() {
+    const d = await getJSON('https://api.bithumb.com/public/ticker/ALL_KRW', { timeout: 25000 });
+    if (d?.status !== '0000' || !d.data || typeof d.data !== 'object') {
+      throw new Error(`bithumb status ${d?.status ?? 'no data'}`);
+    }
+    const usdtKrw = n(d.data.USDT?.closing_price);
+    if (!(usdtKrw > 0)) throw new Error('bithumb USDT-KRW rate missing');
+    const usdPerKrw = 1 / usdtKrw;
+    const out = [];
+    for (const [coin, t] of Object.entries(d.data)) {
+      if (coin === 'date') continue; // 'date' is a timestamp, not a market
+      if (coin === 'USDT') continue; // USDT is only the KRW->USD anchor, not a market we track
+      const price = n(t.closing_price);
+      if (!(price > 0)) continue;
+      const volQuoteKrw = n(t.acc_trade_value_24H);
+      out.push({
+        venue: 'bithumb', base: sym(coin), quote: 'USD',
+        price: price * usdPerKrw,
+        volBase: n(t.units_traded_24H),
+        volQuote: volQuoteKrw != null ? volQuoteKrw * usdPerKrw : null,
+        change24h: n(t.fluctate_rate_24H), // already a percentage, currency-independent
+        api: `https://api.bithumb.com/public/ticker/${coin}_KRW`,
+        trade: `https://www.bithumb.com/exchange/${coin}_KRW`,
+      });
+    }
+    if (!out.length) throw new Error('bithumb returned no markets');
     return out;
   },
 };

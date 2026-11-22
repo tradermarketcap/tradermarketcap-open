@@ -120,7 +120,10 @@ test('bitfinex: USD/UST spot pairs with volume, change and links', async () => {
   const ms = await READERS.bitfinex();
   assert.deepEqual(urls, ['https://api-pub.bitfinex.com/v2/tickers?symbols=ALL']);
   assert.ok(VENUES.bitfinex);
-  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'BTC/USDT', 'ETH/USD', 'XAUT/USD', 'LINK/USDT']);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'BTC/USDT', 'ETH/USD', 'XAUT/USD', 'LINK/USDT', 'DASH/USD', 'WBT/USD', 'WBTC/USD']);
+  // Aliases resolve Bitfinex codes to published tickers; securities, fiat
+  // bases and F0 dated futures are dropped.
+  assert.ok(!ms.some(m => ['TITAN1', 'EUR', 'BTCF0'].includes(m.base)));
   const btc = ms[0];
   assert.equal(btc.venue, 'bitfinex');
   assert.equal(btc.price, 60025);

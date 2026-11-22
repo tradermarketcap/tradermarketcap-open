@@ -227,28 +227,37 @@ export const READERS = {
   },
   // Bitfinex tickers are arrays: [symbol, bid, bidSize, ask, askSize, dailyChange,
   // dailyChangePerc, lastPrice, volume(base), high, low, timestamp]. Symbols carry a
-  // 't' (trading) or 'f' (funding) prefix; funding rows are skipped. UST is USDT.
+  // 't' (trading) or 'f' (funding) prefix; funding rows are skipped. Currency codes
+  // are mapped to the ticker we publish (v2/conf/pub:map:currency:sym, 2026-11-22):
+  // e.g. WHBT is WhiteBIT's WBT, WBT is WBTC, UDC is USDC, DSH is DASH.
   async bitfinex() {
     const d = await getJSON('https://api-pub.bitfinex.com/v2/tickers?symbols=ALL', { timeout: 25000 });
     if (!Array.isArray(d)) throw new Error('bitfinex bad response');
     const out = [];
+    // Bitfinex currency code -> published ticker (from v2/conf/pub:map:currency:sym).
+    const BF_ALIAS = { UST: 'USDT', UDC: 'USDC', DSH: 'DASH', IOT: 'IOTA', ALG: 'ALGO', OPX: 'OP', LIFIII: 'LIF3', BCHN: 'BCH', WHBT: 'WBT', WBT: 'WBTC' };
+    // Not crypto spot assets: tokenized securities, fiat bases, dead UST token,
+    // and F0 dated-future variants (checked against the live ALL feed, 2026-11-22).
+    const BF_SKIP = new Set(['UST', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD', 'ALT2612', 'BMN2', 'CALCPB', 'CH100', 'CMSTR', 'CMTPL', 'STRCST', 'TITAN1', 'TITAN2', 'TITAN4', 'USTBL', 'ALKN']);
     for (const v of d) {
       if (!Array.isArray(v) || typeof v[0] !== 'string' || !v[0].startsWith('t')) continue;
       const body = v[0].slice(1);
-      let b = null, q = null, rawQ = null;
+      let b = null, rawQ = null;
       if (body.includes(':')) {
         const i = body.indexOf(':');
         b = body.slice(0, i); rawQ = body.slice(i + 1);
-        q = rawQ === 'UST' ? 'USDT' : rawQ;
       } else {
-        for (const [suffix, quote] of [['USDT', 'USDT'], ['USDC', 'USDC'], ['UST', 'USDT'], ['USD', 'USD']]) {
-          if (body.endsWith(suffix) && body.length > suffix.length) { b = body.slice(0, -suffix.length); q = quote; rawQ = suffix; break; }
+        for (const suffix of ['USDT', 'USDC', 'UST', 'UDC', 'USD']) {
+          if (body.endsWith(suffix) && body.length > suffix.length) { b = body.slice(0, -suffix.length); rawQ = suffix; break; }
         }
       }
-      if (!keep(b, q) || /TEST/.test(b) || /TEST/.test(rawQ)) continue;
+      if (!b || !rawQ || BF_SKIP.has(b) || /F0$/.test(b) || /TEST/.test(b) || /TEST/.test(rawQ)) continue;
+      const bb = BF_ALIAS[b] || b;
+      const q = USD_QUOTES.has(BF_ALIAS[rawQ] || rawQ) ? (BF_ALIAS[rawQ] || rawQ) : null;
+      if (!keep(bb, q)) continue;
       const price = n(v[7]), volBase = n(v[8]);
       out.push({
-        venue: 'bitfinex', base: sym(b), quote: q, price, volBase, volQuote: volBase != null && price != null ? volBase * price : null,
+        venue: 'bitfinex', base: sym(bb), quote: q, price, volBase, volQuote: volBase != null && price != null ? volBase * price : null,
         change24h: n(v[6]) != null ? n(v[6]) * 100 : null,
         api: `https://api-pub.bitfinex.com/v2/tickers?symbols=${v[0]}`,
         trade: `https://trading.bitfinex.com/t/${b}:${rawQ}`,

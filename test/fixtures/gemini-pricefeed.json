@@ -1,0 +1,57 @@
+[
+  {
+    "pair": "SOLRLUSD",
+    "price": "69.013",
+    "percentChange24h": "0.0172"
+  },
+  {
+    "pair": "BTCGUSD",
+    "price": "58962.35",
+    "percentChange24h": "0.0207"
+  },
+  {
+    "pair": "BTCUSD",
+    "price": "58962.35",
+    "percentChange24h": "0.0207"
+  },
+  {
+    "pair": "XRPUSD",
+    "price": "0.91222",
+    "percentChange24h": "0.0168"
+  },
+  {
+    "pair": "BTCUSDT",
+    "price": "59029.52",
+    "percentChange24h": "0.0169"
+  },
+  {
+    "pair": "DOGEUSD",
+    "price": "0.05404",
+    "percentChange24h": "0.0092"
+  },
+  {
+    "pair": "ETHUSDC",
+    "price": "1656.8",
+    "percentChange24h": "0.0185"
+  },
+  {
+    "pair": "ETHUSD",
+    "price": "1656.8",
+    "percentChange24h": "0.0185"
+  },
+  {
+    "pair": "EURUSD",
+    "price": "1.15087",
+    "percentChange24h": "0.0000"
+  },
+  {
+    "pair": "SOLUSD",
+    "price": "69.013",
+    "percentChange24h": "0.0172"
+  },
+  {
+    "pair": "USDCUSD",
+    "price": "0.99983",
+    "percentChange24h": "0.0000"
+  }
+]

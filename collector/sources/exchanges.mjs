@@ -25,7 +25,28 @@ export const VENUES = {
   bitget: { name: 'Bitget', type: 'Exchange', site: 'https://www.bitget.com' },
   cryptocom: { name: 'Crypto.com Exchange', type: 'Exchange', site: 'https://crypto.com/exchange' },
   upbit: { name: 'Upbit', type: 'Exchange', site: 'https://upbit.com' },
+  gemini: { name: 'Gemini', type: 'Exchange', site: 'https://www.gemini.com' },
 };
+
+// Gemini pair names are the joined BASE+QUOTE with no separator (btcusd, ethusdc). Match the
+// longest quote first so a stablecoin quote is never mistaken for a plain USD pair, and so the
+// base never keeps a glued-on quote tail (e.g. SOLRLUSD -> base "SOLRL" would be a fake coin).
+// GUSD/RLUSD-quoted pairs are recognised here only to be dropped: they are not in USD_QUOTES, so
+// keep() rejects them and no fabricated base ever reaches the site.
+const GEMINI_QUOTES = ['USDT', 'USDC', 'GUSD', 'RLUSD', 'USD'];
+
+// Gemini also quotes fiat crosses (EURUSD, AUDUSDC) and stablecoin-to-stablecoin pairs
+// (USDCUSD, GUSDUSD). Their "base" is a currency, not a coin, so drop them explicitly.
+const GEMINI_FIAT = new Set(['AUD', 'EUR', 'GBP', 'SGD', 'HKD', 'CAD', 'CHF', 'JPY', 'NZD',
+  'USD', 'USDT', 'USDC', 'GUSD', 'RLUSD']);
+
+function geminiPair(name) {
+  const s = String(name || '').toUpperCase();
+  for (const q of GEMINI_QUOTES) {
+    if (s.endsWith(q) && s.length > q.length) return { base: s.slice(0, -q.length), quote: q };
+  }
+  return null;
+}
 
 let krakenPairs = null, krakenPairsAt = 0;
 
@@ -223,5 +244,51 @@ export const READERS = {
       });
     }
     return out;
+  },
+  // Gemini has no single bulk ticker that carries both price and volume. /v1/pricefeed is one bulk
+  // call returning every pair with its last price and 24h change (percentChange24h is a fraction:
+  // "0.0211" = +2.11%). That gives price + change for all pairs in one request. Volume then needs
+  // one /v1/pubticker call per kept pair (volume is keyed by base and quote). Fan out in bounded
+  // batches so we never hammer the API. A pair whose pubticker fails keeps a null volume rather
+  // than failing the whole read; a pricefeed answer that is not a non-empty list fails loudly.
+  // Note: Gemini's USD, USDC and GUSD books share one underlying order book, so btcusd and btcusdc
+  // report the same base volume — downstream aggregation must not add those rows together.
+  async gemini() {
+    const feed = await getJSON('https://api.gemini.com/v1/pricefeed', { timeout: 25000 });
+    if (!Array.isArray(feed) || feed.length === 0) throw new Error('gemini bad response');
+    const rows = [];
+    for (const p of feed) {
+      const pair = geminiPair(p?.pair);
+      if (!pair) continue;
+      const base = sym(pair.base), quote = pair.quote;
+      if (GEMINI_FIAT.has(base)) continue; // fiat crosses and stablecoin-to-stablecoin are not coins
+      if (!keep(base, quote)) continue; // GUSD/RLUSD-quoted pairs are not in USD_QUOTES -> dropped
+      const chg = n(p.percentChange24h);
+      rows.push({ symbol: String(p.pair).toLowerCase(), base, quote, price: n(p.price), change24h: chg != null ? chg * 100 : null });
+    }
+    if (!rows.length) throw new Error('gemini no markets');
+
+    const volumes = new Map();
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < rows.length) {
+        const r = rows[cursor++];
+        try {
+          const t = await getJSON(`https://api.gemini.com/v1/pubticker/${r.symbol}`, { timeout: 15000 });
+          volumes.set(r.symbol, t && typeof t === 'object' && t.volume ? t.volume : null);
+        } catch { volumes.set(r.symbol, null); }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(6, rows.length) }, worker));
+
+    return rows.map(r => {
+      const vol = volumes.get(r.symbol) || {};
+      return {
+        venue: 'gemini', base: r.base, quote: r.quote, price: r.price,
+        volBase: n(vol[r.base]), volQuote: n(vol[r.quote]), change24h: r.change24h,
+        api: `https://api.gemini.com/v1/pubticker/${r.symbol}`,
+        trade: `https://exchange.gemini.com/trade/${r.symbol.toUpperCase()}`,
+      };
+    });
   },
 };

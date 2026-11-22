@@ -213,7 +213,20 @@ const METHODS = {
   // Cosmos SDK chains: bank supply of one denom, minus the community pool (and any listed treasury accounts).
   async cosmos(r) {
     const dec = 10 ** (r.decimals ?? 6);
-    const total = Number((await getJSON(`${r.lcd}/cosmos/bank/v1beta1/supply/by_denom?denom=${r.denom}`)).amount.amount) / dec;
+    let total;
+    try {
+      const d = await getJSON(`${r.lcd}/cosmos/bank/v1beta1/supply/by_denom?denom=${r.denom}`);
+      total = Number(d.amount.amount) / dec;
+    } catch (err) {
+      // Some Cosmos SDK chains (e.g. Sei v2) return 500 panic on supply/by_denom; query /supply/{denom} instead
+      if (err.message?.startsWith('500')) {
+        const d = await getJSON(`${r.lcd}/cosmos/bank/v1beta1/supply/${r.denom}`);
+        total = Number(d.amount.amount) / dec;
+      } else {
+        throw err;
+      }
+    }
+    if (!(total > 0)) throw new Error('bad cosmos supply');
     const excluded = [];
     if (r.communityPool !== false) {
       const p = (await getJSON(`${r.lcd}/cosmos/distribution/v1beta1/community_pool`)).pool.find(x => x.denom === r.denom);
@@ -223,7 +236,21 @@ const METHODS = {
       const b = (await getJSON(`${r.lcd}/cosmos/bank/v1beta1/balances/${e.holder}/by_denom?denom=${r.denom}`)).balance;
       excluded.push({ reason: e.reason, holder: e.holder, amount: Number(b.amount) / dec, src: r.explorer ? r.explorer + e.holder : undefined });
     }
-    return { circulating: total - excluded.reduce((s, e) => s + e.amount, 0), total, src: r.explorer || r.lcd, excluded, note: r.note };
+    const circulating = total - excluded.reduce((s, e) => s + e.amount, 0);
+    if (r.circulating !== false) {
+      if (!(circulating > 0) || circulating > total) throw new Error('bad cosmos supply');
+    }
+    return { circulating: r.circulating === false ? null : circulating, total, src: r.explorer || r.lcd, excluded, note: r.note };
+  },
+  // Sei Network: Cosmos SDK chain with native usei bank supply, minus community pool and listed vesting/treasury accounts.
+  async sei(r) {
+    return METHODS.cosmos({
+      ...r,
+      lcd: r.lcd || 'https://sei-api.polkachu.com',
+      denom: r.denom || 'usei',
+      explorer: r.explorer || 'https://www.mintscan.io/sei/address/',
+      note: r.note || 'Total bank supply from Sei LCD minus community pool; circulating not published because team and foundation vesting accounts are unproven on-chain'
+    });
   },
   // Algorand: total ALGO from a public algod node, minus the Algorand Foundation wallets the Foundation
   // publishes at algorand.co/algorand-foundation/transparency (archived copy cited in coins.json; the

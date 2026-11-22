@@ -180,6 +180,7 @@
   "filecoin": {"symbol": "FIL", "name": "Filecoin", "supply": {"method": "filecoin", "max": 2000000000}},
   "hedera": {"symbol": "HBAR", "name": "Hedera", "supply": {"method": "hedera", "max": 50000000000}},
   "cosmos": {"symbol": "ATOM", "name": "Cosmos Hub", "supply": {"method": "cosmos", "lcd": "https://cosmos-rest.publicnode.com", "denom": "uatom", "explorer": "https://www.mintscan.io/cosmos/address/"}},
+  "sei": {"symbol": "SEI", "name": "Sei", "supply": {"method": "sei", "circulating": false, "lcd": "https://sei-api.polkachu.com", "denom": "usei", "explorer": "https://www.mintscan.io/sei/address/", "max": 10000000000, "note": "Total bank supply from Sei LCD minus community pool; circulating not published because team and foundation vesting accounts are unproven on-chain"}},
   "kaspa": {"symbol": "KAS", "name": "Kaspa", "supply": {"method": "kaspa", "max": 28704035605}},
   "casper": {"symbol": "CSPR", "name": "Casper", "supply": {"method": "casper"}},
   "chainlink": {"symbol": "LINK", "name": "Chainlink", "supply": {"method": "chainlink", "max": 1000000000}},

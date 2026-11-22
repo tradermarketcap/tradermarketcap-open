@@ -34,6 +34,10 @@ export const VENUES = {
 // let keep() drop them, so no fabricated base ever reaches the site.
 const GEMINI_QUOTES = ['USDT', 'USDC', 'GUSD', 'RLUSD', 'USD'];
 
+// Gemini also quotes fiat crosses (EURUSD, EURUSDC, AUDUSD, AUDUSDC). Their bases are currencies,
+// not coins, so a naive split would publish "EUR" and "AUD" as crypto assets. Drop them.
+const GEMINI_FIAT = new Set(['AUD', 'EUR', 'GBP', 'SGD', 'HKD', 'CAD', 'CHF', 'JPY', 'NZD']);
+
 function geminiPair(name) {
   const s = String(name || '').toUpperCase();
   for (const q of GEMINI_QUOTES) {
@@ -240,9 +244,11 @@ export const READERS = {
     return out;
   },
   // Gemini has no bulk ticker that carries volume: one v1/pricefeed call gives every pair with its
-  // price and 24h change (already a percent), then each kept pair needs one v1/pubticker call for
-  // volume. Fan out in bounded batches. A pair whose pubticker fails keeps a null volume rather
-  // than failing the whole read; an answer that is not a list of pairs fails loudly.
+  // price and 24h change (a fraction, scaled to a percent below), then each kept pair needs one
+  // v1/pubticker call for volume. Fan out in bounded batches. A pair whose pubticker fails keeps a
+  // null volume rather than failing the whole read; an answer that is not a list of pairs fails
+  // loudly. Note: Gemini's USD, USDC and GUSD books share one underlying book, so btcusd and
+  // btcusdc report the same base volume — do not add those rows together downstream.
   async gemini() {
     const feed = await getJSON('https://api.gemini.com/v1/pricefeed', { timeout: 25000 });
     if (!Array.isArray(feed) || feed.length === 0) throw new Error('gemini bad response');
@@ -251,8 +257,12 @@ export const READERS = {
       const pair = geminiPair(p?.pair);
       if (!pair) continue;
       const base = sym(pair.base), quote = pair.quote;
-      if (!keep(base, quote)) continue; // GUSD/RLUSD and fiat crosses are dropped here
-      rows.push({ symbol: String(p.pair).toLowerCase(), base, quote, price: n(p.price), change24h: n(p.percentChange24h) });
+      if (GEMINI_FIAT.has(base)) continue; // fiat crosses (EUR/USD) are not coins
+      if (!keep(base, quote)) continue; // GUSD/RLUSD-quoted pairs are dropped here
+      // v1/pricefeed answers percentChange24h as a fraction ("0.0325" = +3.25%): v2/ticker for the
+      // same moment shows open 57,119.99 close 58,975.2 = +3.25%. Publish it as a percent.
+      const chg = n(p.percentChange24h);
+      rows.push({ symbol: String(p.pair).toLowerCase(), base, quote, price: n(p.price), change24h: chg != null ? chg * 100 : null });
     }
     if (!rows.length) throw new Error('gemini no markets');
 

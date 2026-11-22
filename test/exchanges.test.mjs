@@ -132,11 +132,24 @@ test('gemini: stablecoin-quoted pairs are dropped, not given a fabricated base',
   assert.equal(urls[0], 'https://api.gemini.com/v1/pricefeed');
   assert.ok(VENUES.gemini);
   // Only genuinely USD/USDT/USDC-quoted pairs survive; the GUSD/RLUSD pairs are dropped rather
-  // than given a fabricated base. Fiat crosses (EUR/USD) pass through, exactly as the Kraken
-  // reader already lets them, so this reader adds no new filtering rule of its own.
-  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'ETH/USDT', 'SOL/USDC', 'EUR/USD']);
+  // than given a fabricated base, and fiat crosses (EUR/USD, AUD/USDC) are dropped because their
+  // base is a currency, not a coin.
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USD', 'ETH/USDT', 'SOL/USDC']);
   // No live pair may carry a base that is another ticker glued to a stablecoin name.
   for (const m of ms) assert.ok(!/^(SOLRL|ETHRL|BTCG|MONG|DRIFTRL)$/.test(m.base), `fabricated base ${m.base}`);
+});
+
+test('gemini: percentChange24h is a fraction in the feed and is published as a percent', async () => {
+  // v1/pricefeed said 0.0160 for BTCUSD while v2/ticker showed open 58300 close 59222.81 = +1.58%.
+  globalThis.fetch = async url => {
+    const u = String(url);
+    if (u === 'https://api.gemini.com/v1/pricefeed') return new Response(JSON.stringify(geminiFeedFixture()), { status: 200 });
+    return new Response(JSON.stringify({ last: '1', volume: { btc: '1', usd: '1' } }), { status: 200 });
+  };
+  const ms = await READERS.gemini();
+  const btc = ms.find(m => m.base === 'BTC' && m.quote === 'USD');
+  assert.equal(btc.change24h, 1.6); // 0.0160 * 100, not 0.0160
+  assert.equal(btc.price, 59222.81);
 });
 
 test('gemini: a non-list answer fails the read instead of reporting no markets', async () => {

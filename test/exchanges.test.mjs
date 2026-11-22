@@ -121,7 +121,8 @@ test('htx: USD-quoted spot pairs with volume, change and links', async () => {
   const ms = await READERS.htx();
   assert.deepEqual(urls, ['https://api.htx.com/market/tickers']);
   assert.ok(VENUES.htx);
-  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USDT', 'ETH/USDC', 'XRP/USDT']);
+  assert.deepEqual(ms.map(m => `${m.base}/${m.quote}`), ['BTC/USDT', 'ETH/USDC', 'XRP/USDT', 'ADA/USDT']);
+  assert.ok(ms.every(m => !/[-_:]/.test(m.base)));
   const btc = ms[0];
   assert.equal(btc.venue, 'htx');
   assert.equal(btc.price, 60144.03);

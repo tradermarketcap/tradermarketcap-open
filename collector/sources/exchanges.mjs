@@ -232,7 +232,7 @@ export const READERS = {
     if (d.status !== 'ok') throw new Error(`htx status ${d.status}`);
     const out = [];
     for (const v of d.data || []) {
-      const [b, q] = splitJoined(String(v.symbol).toUpperCase());
+      const [b, q] = splitJoined(String(v.symbol).toUpperCase().replace(/[-_:]/g, ''));
       if (!keep(b, q)) continue;
       const price = n(v.close), open = n(v.open);
       out.push({

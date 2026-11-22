@@ -2,5 +2,6 @@
  {"symbol":"btcusdt","open":59481.46,"high":60945.9,"low":55156.6,"close":60144.03,"amount":8872.935555074027,"vol":518685070.6358959,"count":528581,"bid":60104.92,"bidSize":0.118751,"ask":60105.55,"askSize":0.104111},
  {"symbol":"ethusdc","open":3000.0,"high":3100.0,"low":2900.0,"close":3050.5,"amount":1000.25,"vol":3051625.0,"count":90000,"bid":3050.4,"bidSize":5.0,"ask":3050.6,"askSize":4.0},
  {"symbol":"xrpusdt","open":0.5,"high":0.6,"low":0.4,"close":0.55,"amount":10.0,"vol":5.5,"count":100,"bid":0.54,"bidSize":1.0,"ask":0.56,"askSize":1.0},
+ {"symbol":"ada-usdt","open":0.45,"high":0.47,"low":0.44,"close":0.465,"amount":1200000.0,"vol":558000.0,"count":80000,"bid":0.464,"bidSize":1000.0,"ask":0.466,"askSize":900.0},
  {"symbol":"ethbtc","open":0.05,"high":0.06,"low":0.04,"close":0.055,"amount":1.0,"vol":0.055,"count":10,"bid":0.054,"bidSize":1.0,"ask":0.056,"askSize":1.0}
 ]}

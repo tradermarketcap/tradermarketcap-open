@@ -621,3 +621,76 @@ test('aptos: totals read moments apart (a few thousand APT) still agree', async 
   const s = await readSupply({ method: 'aptos' });
   assert.ok(Math.abs(s.circulating - 889397967.12) < 1e-4);
 });
+
+// Fake Ethereum RPC for the FET rule: totalSupply(), decimals() and balanceOf(holder).
+// Response shapes captured from eth.drpc.org on 2026-11-23.
+function fakeEth({ total = '2714384546671999999999656122', decimals = '0x12', holders = {} } = {}) {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    assert.ok(String(url).includes('eth.'), 'only the Ethereum RPC host is called');
+    const req = JSON.parse(opts.body);
+    assert.equal(req.method, 'eth_call');
+    const data = req.params[0].data;
+    let result;
+    if (data === '0x18160ddd') result = '0x' + BigInt(total).toString(16).padStart(64, '0');
+    else if (data === '0x313ce567') result = '0x' + BigInt(decimals).toString(16).padStart(64, '0');
+    else if (data.startsWith('0x70a08231')) {
+      const holder = '0x' + data.slice(10 + 24);
+      const amt = holders[holder.toLowerCase()];
+      result = '0x' + BigInt(amt === undefined ? 0 : amt).toString(16).padStart(64, '0');
+    } else throw new Error('unexpected call data ' + data);
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) };
+  };
+  return () => { globalThis.fetch = prevFetch; };
+}
+
+const FET_RULE = {
+  method: 'tokens',
+  parts: [{ chain: 'eth', address: '0xaea46A60368A7bD060eec7DF8CBa43b7EF41Ad85' }],
+  exclude: [
+    { chain: 'eth', holder: '0xf58Db6A8c84b454CC8D2980b0d8B6017d0B645Dc', reason: 'ASI Alliance merger treasury' },
+    { chain: 'eth', holder: '0x5a8de252ea228deCe61638C336fE43ac8166166a', reason: 'Fetch.ai Admin Multisig (Etherscan label)' },
+    { chain: 'eth', holder: '0x8400ac235Ed4F139A3E05670A9A3C724e448129B', reason: 'Fetch.ai Foundation multisig (Etherscan label)' },
+  ],
+};
+
+test('fetch-ai: the merger treasury and both labeled multisigs are subtracted from the ERC-20 total', async () => {
+  const restore = fakeEth({ holders: {
+    '0xf58db6a8c84b454cc8d2980b0d8b6017d0b645dc': '277549566000000000000000000',
+    '0x5a8de252ea228dece61638c336fe43ac8166166a': '135806682359283411536904890',
+    '0x8400ac235ed4f139a3e05670a9a3c724e448129b': '26691468094688173000000000',
+  } });
+  try {
+    const s = await readSupply(FET_RULE);
+    assert.ok(Math.abs(s.total - 2714384546.672) < 0.01);
+    assert.equal(s.excluded.length, 3);
+    const out = s.excluded.reduce((a, e) => a + e.amount, 0);
+    assert.ok(Math.abs(out - 440047716.4539716) < 0.01, 'the three wallets hold ~440.0M FET');
+    assert.ok(Math.abs(s.circulating - 2274336830.218) < 0.01);
+    assert.ok(s.circulating < s.total, 'circulating is never the raw total');
+    assert.equal(s.checked, true);
+    assert.equal(s.method, 'tokens');
+  } finally { restore(); }
+});
+
+test('fetch-ai: a wallet read that reverts fails the whole read instead of overstating circulating', async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const req = JSON.parse(opts.body);
+    const data = req.params[0].data;
+    if (data.startsWith('0x70a08231')) return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, error: { code: 3, message: 'execution reverted' } }) };
+    const result = data === '0x18160ddd' ? '0x' + BigInt('2714384546671999999999656122').toString(16).padStart(64, '0') : '0x' + BigInt(18).toString(16).padStart(64, '0');
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) };
+  };
+  try {
+    await assert.rejects(readSupply(FET_RULE), /rpc/);
+  } finally { globalThis.fetch = prevFetch; }
+});
+
+test('fetch-ai: the seed rule attaches to the coin id the site actually serves', async () => {
+  const { 'fetch-ai': fet } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  assert.equal(fet.symbol, 'FET');
+  assert.equal(fet.supply.parts[0].address, '0xaea46A60368A7bD060eec7DF8CBa43b7EF41Ad85');
+  assert.equal(fet.supply.exclude.length, 3);
+  assert.ok(fet.supply.exclude.some(e => e.holder.toLowerCase() === '0xf58db6a8c84b454cc8d2980b0d8b6017d0b645dc'));
+});

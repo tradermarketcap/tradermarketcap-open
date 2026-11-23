@@ -621,3 +621,62 @@ test('aptos: totals read moments apart (a few thousand APT) still agree', async 
   const s = await readSupply({ method: 'aptos' });
   assert.ok(Math.abs(s.circulating - 889397967.12) < 1e-4);
 });
+
+// Celestia: chain total is real (captured 2026-11-23), the published figures are the live API values.
+const TIA_RULE = { method: 'celestia', lcd: 'https://lcd.test', api: 'https://supply.test', denom: 'utia' };
+function fakeTia({ chainTotalUtia = '1182453406801789', circ = 993689595.687915, apiTotal = 1182213852.846135 } = {}) {
+  globalThis.fetch = async url => {
+    const u = String(url);
+    const reply = val => ({ ok: true, status: 200, json: async () => val });
+    if (u === 'https://lcd.test/cosmos/bank/v1beta1/supply/by_denom?denom=utia') {
+      return reply({ amount: { denom: 'utia', amount: chainTotalUtia } });
+    }
+    if (u === 'https://supply.test/v0/circulating-supply') return reply(circ);
+    if (u === 'https://supply.test/v0/total-supply') return reply(apiTotal);
+    throw new Error('unexpected url: ' + u);
+  };
+}
+
+test('celestia: total is a chain read and the unvested gap is published with its source', async () => {
+  fakeTia();
+  const s = await readSupply(TIA_RULE);
+  assert.ok(Math.abs(s.total - 1182453406.801789) < 1e-6);
+  assert.equal(s.circulating, 993689595.687915);
+  assert.equal(s.src, 'https://supply.test');
+  assert.equal(s.checked, true);
+  assert.equal(s.method, 'celestia');
+  assert.equal(s.excluded.length, 1);
+  assert.ok(Math.abs(s.excluded[0].amount - (1182453406.801789 - 993689595.687915)) < 1e-6);
+  assert.match(s.excluded[0].src, /celestiaorg\/supply/);
+  // circulating never exceeds the chain total
+  assert.ok(s.circulating < s.total);
+});
+
+test('celestia: circulating above the published total fails the read', async () => {
+  fakeTia({ circ: 5e9, apiTotal: 1e9 });
+  await assert.rejects(readSupply(TIA_RULE), /circ|Invalid Celestia supply/);
+});
+
+test('celestia: a non-positive or missing figure fails instead of publishing zero or NaN', async () => {
+  for (const bad of [0, -10, 'oops', null]) {
+    fakeTia({ circ: bad });
+    await assert.rejects(readSupply(TIA_RULE), /Invalid Celestia supply/);
+  }
+  fakeTia({ apiTotal: 0 });
+  await assert.rejects(readSupply(TIA_RULE), /Invalid Celestia supply/);
+});
+
+test('celestia: a chain total that no longer matches the published schedule fails the read', async () => {
+  // chain moved 5% away from the schedule total: one of the two is stale, so refuse to publish
+  fakeTia({ chainTotalUtia: '1241576077141878' });
+  await assert.rejects(readSupply(TIA_RULE), /disagrees with chain total/);
+});
+
+test('celestia: a broken chain read fails the read rather than falling back to the published number', async () => {
+  globalThis.fetch = async url => {
+    const u = String(url);
+    if (u.startsWith('https://lcd.test')) return { ok: false, status: 503, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => 993689595.687915 };
+  };
+  await assert.rejects(readSupply(TIA_RULE), /503|bad Celestia/);
+});

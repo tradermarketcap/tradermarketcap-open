@@ -315,6 +315,53 @@ const METHODS = {
   async reset() {
     return resetSupply();
   },
+  // Celestia (TIA): total is a chain read (bank supply of utia). Circulating is NOT read from the chain:
+  // the genesis lockups (ecosystem 267,944,711 / investors 355,689,414 / core contributors 176,365,875 TIA,
+  // github.com/celestiaorg/supply internal/consts.go) are not exposed as vesting accounts by the LCD. A full
+  // scan of every auth account on celestia-api.polkachu.com (1,709,108 accounts, 171 pages, 2026-11-23) found
+  // 850 vesting accounts holding 1,264,109.39 TIA still unvested — 0.107% of total, two orders of magnitude
+  // below the published non-circulating gap — so the lockup allocations live outside /cosmos/auth/v1beta1/accounts.
+  // Celestia's own lockup queries (/celestia/lockup/v1/accounts, /locked_amount) return 501 Not Implemented on
+  // every public LCD reachable from here, so circulating cannot be assembled from chain state. Instead we use the
+  // project's own published figure (supply.celestia.org, run by Celestia from celestiaorg/supply), which the
+  // review of PR #34 accepted as a valid first-party source, and we publish the excluded gap so the coin page
+  // shows what was removed.
+  //
+  // Its README warns the figure does not adjust for tokens retroactively locked after TGE under CIP-31, "likely
+  // no more than around 1%". We do not apply a guessed haircut: the on-chain part of that margin was measured
+  // (1,264,109.39 TIA across 850 vesting accounts above, and CIP-31 folds a lockup account's rewards back into
+  // that same account's vesting schedule, so they are inside the 0.107%). If the two totals drift apart the whole
+  // read fails rather than publishing a number built on a stale schedule.
+  async celestia(r) {
+    const lcd = r.lcd;
+    const api = r.api;
+    const [supply, c, t] = await Promise.all([
+      getJSON(`${lcd}/cosmos/bank/v1beta1/supply/by_denom?denom=${r.denom || 'utia'}`),
+      getJSON(`${api}/v0/circulating-supply`),
+      getJSON(`${api}/v0/total-supply`),
+    ]);
+    const total = Number(supply?.amount?.amount) / 1e6;
+    const circulating = Number(c);
+    const apiTotal = Number(t);
+    if (!(total > 0) || !Number.isFinite(total)) throw new Error(`bad Celestia chain total supply: ${JSON.stringify(supply)?.slice(0, 120)}`);
+    if (!(circulating > 0) || !(apiTotal > 0)) throw new Error(`Invalid Celestia supply: circ=${c}, total=${t}`);
+    if (circulating > apiTotal) throw new Error(`Invalid Celestia supply: circulating ${circulating} above total ${apiTotal}`);
+    // the chain total and the project's schedule total must agree; a drift means one of them is stale
+    if (Math.abs(apiTotal / total - 1) > 0.01) throw new Error(`Celestia schedule total ${apiTotal} disagrees with chain total ${total}`);
+    const unvested = total - circulating;
+    if (!(unvested > 0)) throw new Error(`Invalid Celestia supply: circulating ${circulating} not below chain total ${total}`);
+    return {
+      circulating,
+      total,
+      src: api,
+      excluded: [{
+        reason: 'Unvested allocations on Celestia\'s published unlock schedule (ecosystem, investor and core-contributor allocations; CIP-31 also folds staking rewards earned by a lockup account back into that account\'s schedule). The genesis lockups are not exposed by the chain\'s auth or lockup queries, so this is the project\'s published figure rather than a sum of wallet balances.',
+        amount: unvested,
+        src: 'https://github.com/celestiaorg/supply/blob/main/internal/consts.go',
+      }],
+      note: `Total read from the chain (bank supply of utia on ${lcd}), circulating from Celestia's own supply API (${api}, run from celestiaorg/supply). The API does not adjust for tokens retroactively locked after TGE under CIP-31 (README: "likely no more than around 1%"); a full scan of the chain's 1,709,108 auth accounts found 850 vesting accounts holding 1,264,109.39 TIA unvested (0.107% of total), so the measurable part of that margin is published here rather than estimated.`,
+    };
+  },
   // Chainlink (LINK): the full 1B supply has existed since 2017. Chainlink publishes the
   // official non-circulating wallet list and each wallet's balance at supply.chain.link
   // (linked from https://chain.link/circulating-supply). We subtract exactly those

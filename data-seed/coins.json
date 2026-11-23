@@ -17,6 +17,8 @@
       { "chain": "arbitrum", "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" },
       { "chain": "avax", "address": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E" } ] } },
   "bnb": { "symbol": "BNB", "name": "BNB", "supply": { "method": "bnb" } },
+  "celestia": { "symbol": "TIA", "name": "Celestia", "supply": { "method": "celestia", "lcd": "https://celestia-api.polkachu.com", "api": "https://supply.celestia.org", "denom": "utia",
+    "note": "Total is a chain read: bank supply of utia. Circulating comes from Celestia's own supply API (supply.celestia.org, run by Celestia from celestiaorg/supply) because the genesis lockups are not on-chain as vesting accounts: a full scan of all 1,709,108 auth accounts (2026-11-23) found 850 vesting accounts holding 1,264,109.39 TIA unvested, and the chain's lockup queries return 501 on every public LCD, so circulating cannot be assembled from chain state. The excluded gap is published with its source so the split is visible; per the bounty rule, no aggregator figures are used." } },
   "optimism": { "symbol": "OP", "name": "Optimism", "supply": { "method": "tokens", "parts": [{ "chain": "optimism", "address": "0x4200000000000000000000000000000000000042" }], "exclude": [
     { "chain": "optimism", "holder": "0x2A82Ae142b2e62Cb7D10b55E323ACB1Cab663a26", "reason": "OP Treasury: Foundation Allocated Budget (unspent allocation, needs governance approval to spend)" },
     { "chain": "optimism", "holder": "0x2501c477D0A35545a387Aa4A3EEe4292A9a8B3F0", "reason": "OP Treasury: Foundation Approved Budget" },

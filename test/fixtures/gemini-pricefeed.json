@@ -1,0 +1,10 @@
+[
+ { "pair": "BTCUSD", "price": "59222.81", "percentChange24h": "0.0160" },
+ { "pair": "ETHUSDT", "price": "1686.29", "percentChange24h": "0.0357" },
+ { "pair": "SOLUSDC", "price": "69.286", "percentChange24h": "0.0188" },
+ { "pair": "MONGUSD", "price": "0.013444", "percentChange24h": "0.0551" },
+ { "pair": "BTCGUSD", "price": "59222.81", "percentChange24h": "0.0160" },
+ { "pair": "ETHRLUSD", "price": "1660.99", "percentChange24h": "0.0329" },
+ { "pair": "DRIFTRLUSD", "price": "0.0091", "percentChange24h": "0.0460" },
+ { "pair": "EURUSD", "price": "1.15087", "percentChange24h": "0.0000" }
+]

@@ -58,6 +58,24 @@ async function tokenTotal(p) {
 }
 
 const METHODS = {
+  // Read /thorchain/supply from THORNode through Liquify's public gateway. THORChain excludes
+  // only the protocol reserve from circulation, so bonded RUNE and RUNE in liquidity pools count.
+  async thorchain() {
+    const src = 'https://gateway.liquify.com/chain/thorchain_api/thorchain/supply';
+    const { total, circulating, locked } = await getJSON(src);
+    const reserve = locked?.reserve;
+    if (![total, circulating, reserve].every(value => Number.isSafeInteger(value) && value >= 0) || total === 0) {
+      throw new Error('invalid THORNode RUNE supply');
+    }
+    // THORNode subtracts the reserve in base units, then truncates each field to whole RUNE.
+    const remainder = total - circulating - reserve;
+    if (remainder !== 0 && remainder !== 1) throw new Error('inconsistent THORNode RUNE supply');
+    return {
+      total, circulating, src,
+      excluded: [{ reason: 'THORChain reserve module', amount: reserve, src }],
+      note: 'THORNode bank supply less the reserve. Bonded and pooled RUNE count as circulating.',
+    };
+  },
   async blockchair(r) {
     const url = `https://api.blockchair.com/${r.chain}/stats`;
     const c = (await getJSON(url)).data.circulation / 10 ** (r.decimals ?? 8);
@@ -313,8 +331,105 @@ const METHODS = {
       excluded: [{ reason: 'Locked allocations (foundation, community reserve, early supporters)', amount: total - circ, src: 'https://blog.sui.io/token-release-schedule/' }],
       note: 'Total from Sui GraphQL; circulating from the official Sui Explorer circulation API (Sui JSON-RPC is deprecated). Stake rewards are circulating when paid' };
   },
+  // Jupiter's own Token API publishes circulating supply for its tokens, already net of
+  // locked team/community allocations and Jupiter Lock vesting escrows (see the JUP
+  // community audits on discuss.jup.ag for the wallet breakdown).
+  async jupiter(r) {
+    const url = `https://api.jup.ag/tokens/v2/search?query=${r.mint}`;
+    const d = (await getJSON(url))[0];
+    if (d?.id !== r.mint) throw new Error('jupiter: mint mismatch');
+    const circ = Number(d?.circSupply), total = Number(d?.totalSupply);
+    if (!(circ > 0) || !(total >= circ)) throw new Error('bad jupiter supply');
+    return { circulating: circ, total, src: url,
+      excluded: [{ reason: 'Locked team/community allocations and Jupiter Lock vesting escrows', amount: total - circ, src: 'https://discuss.jup.ag/t/jup-community-audit-feb-2025/34764' }],
+      note: 'Jupiter Token API circSupply: locked team/community wallets and unvested Jupiter Lock escrows excluded by Jupiter' };
+  },
   async extra() {
     return extraSupply();
+  },
+  // TON: total supply is the sum of nanoTON (grams) carried in the masterchain head block and all
+  // active workchain shard blocks via TonAPI (tonapi.io/v2/blockchain/masterchain-head and /shards).
+  // Non-circulating exclusions:
+  // 1) TON Believers Fund ("The Locker") contract (EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2),
+  //    read live from toncenter.com/api/v2/getAddressBalance.
+  // 2) Frozen early-miner wallets from on-chain config param 44 (suspended_address_list) read live
+  //    from tonapi.io/v2/blockchain/config and summed via tonapi.io/v2/accounts/_bulk while
+  //    now < suspended_until (ton.vote/EQCb8dxevgHhBnsTodJKXaCrafplHzEf1V2Adj0GVlhA5xI4).
+  async ton(r = {}) {
+    const mc = await getJSON('https://tonapi.io/v2/blockchain/masterchain-head');
+    const mcGrams = mc?.value_flow?.to_next_blk?.grams;
+    if (!mc?.seqno || mcGrams == null) throw new Error('bad TON masterchain head');
+    const sh = await getJSON(`https://tonapi.io/v2/blockchain/masterchain/${mc.seqno}/shards`);
+    if (!Array.isArray(sh?.shards) || sh.shards.length === 0) throw new Error('bad TON masterchain shards');
+    let totalNano = BigInt(mcGrams);
+    for (const s of sh.shards) {
+      const g = s?.last_known_block?.value_flow?.to_next_blk?.grams;
+      if (g == null) throw new Error('bad TON shard value_flow');
+      totalNano += BigInt(g);
+    }
+    const total = Number(totalNano) / 1e9;
+    if (!(total > 5e9)) throw new Error('bad TON total supply ' + total);
+    const lockerAddr = 'EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2';
+    const lockerRes = await getJSON(`https://toncenter.com/api/v2/getAddressBalance?address=${lockerAddr}`);
+    if (!lockerRes?.ok || !lockerRes?.result) throw new Error('bad TON locker balance');
+    const lockerTon = Number(BigInt(lockerRes.result)) / 1e9;
+    if (!(lockerTon > 0)) throw new Error('zero TON locker balance');
+    const excluded = [
+      {
+        reason: 'TON Believers Fund (The Locker smart contract)',
+        holder: lockerAddr,
+        amount: lockerTon,
+        src: `https://tonviewer.com/${lockerAddr}`,
+      },
+    ];
+    const cfg = await getJSON('https://tonapi.io/v2/blockchain/config');
+    const p44 = cfg?.['44'];
+    const suspendedUntil = Number(p44?.suspended_until);
+    if (!p44 || !Array.isArray(p44.accounts) || !(suspendedUntil > 0)) {
+      throw new Error('bad TON config param 44');
+    }
+    if (Math.floor(Date.now() / 1000) < suspendedUntil && p44.accounts.length > 0) {
+      let frozenNano = 0n;
+      for (let i = 0; i < p44.accounts.length; i += 100) {
+        const chunk = p44.accounts.slice(i, i + 100);
+        const bulk = await getJSON('https://tonapi.io/v2/accounts/_bulk', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ account_ids: chunk }),
+        });
+        if (!Array.isArray(bulk?.accounts) || bulk.accounts.length !== chunk.length) {
+          throw new Error('bad TON suspended accounts bulk response');
+        }
+        for (const acc of bulk.accounts) {
+          if (acc?.balance == null) throw new Error('bad TON suspended account balance');
+          frozenNano += BigInt(acc.balance);
+        }
+      }
+      const unlockDate = new Date(suspendedUntil * 1000).toISOString().slice(0, 10);
+      excluded.push({
+        reason: `${p44.accounts.length} frozen early-miner wallets suspended until ${unlockDate} (config param 44)`,
+        holder: `${p44.accounts.length} on-chain suspended accounts`,
+        amount: Number(frozenNano) / 1e9,
+        src: 'https://ton.vote/EQCb8dxevgHhBnsTodJKXaCrafplHzEf1V2Adj0GVlhA5xI4',
+      });
+    }
+    for (const e of r.exclude || []) {
+      const res = await getJSON(`https://toncenter.com/api/v2/getAddressBalance?address=${e.holder}`);
+      if (!res?.ok || res?.result == null) throw new Error('bad TON balance for ' + e.holder);
+      excluded.push({
+        reason: e.reason,
+        holder: e.holder,
+        amount: Number(BigInt(res.result)) / 1e9,
+        src: `https://tonviewer.com/${e.holder}`,
+      });
+    }
+    return {
+      circulating: total - excluded.reduce((s, e) => s + e.amount, 0),
+      total,
+      src: 'https://tonapi.io',
+      excluded,
+      note: 'Total TON summed from masterchain + workchain shard block value_flow (tonapi.io); excludes TON Believers Fund locker contract (toncenter.com) and active config param 44 suspended early-miner accounts read live via tonapi.io/v2/accounts/_bulk.',
+    };
   },
 };
 

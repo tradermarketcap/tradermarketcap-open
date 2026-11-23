@@ -373,8 +373,14 @@ const METHODS = {
     ].filter(e => e.amount > 0);
     const circulating = disclosedTotal - excluded.reduce((s, e) => s + e.amount, 0);
     if (!(circulating > 0)) throw new Error('quant: bad circulating supply');
-    return { circulating, total: disclosedTotal, src: 'https://x.com/quantnetwork/status/1043093247839678464', excluded,
-      note: `Total is Quant's own post-burn disclosure (14 Sep 2018), not totalSupply(): the contract counter still reads ${rawCounter.toLocaleString('en-US')} because the burn moved tokens to the contract address instead of decrementing it. Only balances that can never move are excluded; QNT has no contractual team or company lock.` };
+    // The company held 4,648,234.05 QNT at the burn and has never disclosed what it holds
+    // since, so a circulating figure built from the 2018 split would overstate it. Publishing
+    // total only is the honest answer (same shape as ENA/PYTH).
+    const publish = r.circulating !== false;
+    return { circulating: publish ? circulating : null, total: disclosedTotal, src: 'https://x.com/quantnetwork/status/1043093247839678464', excluded,
+      note: publish
+        ? `Total is Quant's own post-burn disclosure (14 Sep 2018), not totalSupply(): the contract counter still reads ${rawCounter.toLocaleString('en-US')} because the burn moved tokens to the contract address instead of decrementing it.`
+        : `Total is Quant's own post-burn disclosure (14 Sep 2018), not totalSupply(): the contract counter still reads ${rawCounter.toLocaleString('en-US')} because the burn moved tokens to the contract address instead of decrementing it. ${r.note || 'Circulating supply is not published.'}` };
   },
   async extra() {
     return extraSupply();

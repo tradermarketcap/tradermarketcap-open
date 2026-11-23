@@ -209,7 +209,8 @@
       "disclosedTotal": 14612493.080826178,
       "burnedAt2018": 9545765.95,
       "max": 14612493.080826178,
-      "note": "Total is Quant's own post-burn disclosure (14 Sep 2018): 14,612,493.080826178 QNT. The contract's totalSupply() still reads 45,467,000 because the 2018 burn parked 9,545,765.95 unsold QNT at the contract address instead of decrementing the counter, so that higher figure is a pre-burn artefact and is never published as supply. QNT has no contractual team, company or foundation lock, so company holdings count as circulating; only the parked burn and the burn address are excluded."
+      "circulating": false,
+      "note": "Circulating supply is not published. Quant's own 14 Sep 2018 burn post gives the post-burn total 14,612,493.080826178 QNT, of which 9,964,259.03181537 was public and 4,648,234.049010808 was held by the company. The public figure is a 2018 snapshot, not today's circulating supply, and Quant has disclosed nothing about how much of the company allocation it still holds: Blockworks' disclosure file records no current figure, the only Etherscan-labelled company figure is ~68,000 QNT and is unreconciled with the 2018 number, and community estimates of ~2M in treasury carry no source. Subtracting the 2018 company balance would assume none of it was ever sold; skipping it would assume all of it was. Both overstate or understate without proof, so circulating stays unpublished rather than guessed, per the rule that circulating is never overstated. Total supply, which is what this rule publishes, is fixed: the contract has no mint function and Quant's burn set it once."
     }
   }
 }

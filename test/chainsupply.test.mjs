@@ -339,6 +339,10 @@ const QNT_RULE = {
   max: 14612493.080826178,
 };
 
+// Live rule as shipped: circulating is unpublished because Quant's current company holdings
+// are unknown, so only the total (a fixed, disclosed number) is published.
+const QNT_SHIPPED = { ...QNT_RULE, circulating: false };
+
 test('quant: publishes the disclosed post-burn total, not the 45.4M totalSupply() artefact', async () => {
   const f = fakeQuant();
   try {
@@ -358,6 +362,30 @@ test('quant: publishes the disclosed post-burn total, not the 45.4M totalSupply(
     assert.ok(Math.abs(s.excluded.reduce((a, e) => a + e.amount, 0) + s.circulating - s.total) < 1e-6,
       'excluded balances explain the whole gap');
   } finally { f.restore(); }
+});
+
+test('quant: circulating:false publishes the total and leaves circulating unpublished', async () => {
+  const f = fakeQuant();
+  try {
+    const s = await readSupply(QNT_SHIPPED);
+    assert.equal(s.total, 14612493.080826178);
+    assert.equal(s.circulating, null, 'circulating is unpublished, never a guess');
+    assert.equal(s.checked, true);
+    // the burn evidence is still reported, so a reader can see what was reconciled
+    assert.equal(s.excluded.length, 2);
+    assert.match(s.note, /not totalSupply/);
+  } finally { f.restore(); }
+});
+
+test('quant: the shipped rule publishes total only and explains the unpublished circulating', () => {
+  const coins = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url)));
+  const rule = coins.quant.supply;
+  assert.equal(rule.circulating, false, 'shipped rule leaves circulating unpublished');
+  assert.equal(rule.disclosedTotal, 14612493.080826178);
+  // the note must name the reason a reader would look for
+  assert.match(rule.note, /Circulating supply is not published/);
+  assert.match(rule.note, /company/i);
+  assert.match(rule.note, /4,648,234/);
 });
 
 test('quant: a counter that is no longer the pre-burn artefact fails instead of guessing', async () => {

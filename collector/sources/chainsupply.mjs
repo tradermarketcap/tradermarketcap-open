@@ -331,38 +331,49 @@ const METHODS = {
       excluded: [{ reason: 'Locked allocations (foundation, community reserve, early supporters)', amount: total - circ, src: 'https://blog.sui.io/token-release-schedule/' }],
       note: 'Total from Sui GraphQL; circulating from the official Sui Explorer circulation API (Sui JSON-RPC is deprecated). Stake rewards are circulating when paid' };
   },
-  // Aptos (APT): total supply from the chain's own coin supply view (0x1::coin::supply), which
-  // already excludes burned gas fees (all APT gas is burned). Circulating is NOT published:
-  // AIP-140 commits the Foundation to locking and permanently staking 210M APT ("never sold or
-  // distributed"), but the Foundation has published no address, contract or execution date for
-  // that lock, and it cannot be found by reading the chain (the 81 active validator pools hold
-  // 753.9M APT in total and none is near 210M). Subtracting a constant we cannot verify is the
-  // defect this bounty exists to remove, and the rule is "never overstate circulating", so
-  // circulating stays unpublished rather than guessed. Total is a real chain read.
+  // Aptos (APT): the Aptos Foundation publishes its own live supply API, linked as "Current
+  // Token Supply API" on the Mainnet row of aptos.dev/network/nodes/networks. That is a
+  // first-party source and it already nets out the locked community/foundation vesting tranches
+  // and the 210M APT permanent stake commitment from AIP-140, which is exactly what issue #5
+  // asks for. Its current_total_supply is cross-checked against a chain read of 0x1::coin::supply
+  // every pass, so a diverging, stale or wrong-network endpoint fails the read instead of
+  // publishing a number we cannot corroborate. Gas fees are burned on Aptos, so they are
+  // already out of both figures.
   async aptos() {
+    const SUPPLY_API = 'https://aptos-supply.dev.gcp.aptosdev.com/supply';
     const url = 'https://api.mainnet.aptoslabs.com/v1/view';
-    const res = await getJSON(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        function: '0x1::coin::supply',
-        type_arguments: ['0x1::aptos_coin::AptosCoin'],
-        arguments: [],
+    const [pub, res] = await Promise.all([
+      getJSON(SUPPLY_API),
+      getJSON(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          function: '0x1::coin::supply',
+          type_arguments: ['0x1::aptos_coin::AptosCoin'],
+          arguments: [],
+        }),
       }),
-    });
-    // Shape is [{ vec: ["<amount>"] }]; older nodes answered [["<amount>"]].
+    ]);
+    // Shape is [{ vec: ["<amount>"] }]; older nodes answered [["<amount>"]]. Octas, 8 decimals.
     const first = Array.isArray(res) ? res[0] : null;
     const raw = Array.isArray(first) ? first[0] : Array.isArray(first?.vec) ? first.vec[0] : null;
     if (typeof raw !== 'string' || !/^\d+$/.test(raw)) throw new Error('aptos: no integer supply in view response');
     const total = Number(raw) / 1e8;
     if (!(total > 0)) throw new Error(`aptos: bad total supply ${total}`);
+    const circ = Number(pub?.current_circulating_supply);
+    const pubTotal = Number(pub?.current_total_supply);
+    if (!(circ > 0) || !(pubTotal > 0)) throw new Error('aptos: foundation supply API returned no supply');
+    if (!(circ <= pubTotal)) throw new Error(`aptos: circulating ${circ} exceeds total ${pubTotal}`);
+    // The Foundation's total and the chain must agree to within rounding; if the API goes stale
+    // or switches networks, fail rather than publish a figure we cannot corroborate.
+    if (Math.abs(pubTotal - total) > 1) throw new Error(`aptos: foundation total ${pubTotal} != chain total ${total}`);
     return {
-      circulating: null,
+      circulating: circ,
       total,
-      src: `${url} 0x1::coin::supply`,
+      src: SUPPLY_API,
       parts: [{ chain: 'aptos', amount: total, src: url }],
       excluded: [],
-      note: 'Total is the chain read (gas fees are burned, so they are already out). Circulating is not published: the Foundation\'s 210M APT permanent lock (AIP-140) has no published address or contract and cannot be read from the chain, so subtracting it would be an unverified guess. Locked community/foundation vesting tranches run to 2032 and are not identifiable on-chain either.',
+      note: `Circulating is the Aptos Foundation's own published figure from its Current Token Supply API (${SUPPLY_API}, linked from aptos.dev), which already nets out locked community/foundation vesting and the 210M APT AIP-140 permanent stake. Total is the live chain read of 0x1::coin::supply and agrees with the Foundation's reported total to within 1 APT. Gas fees are burned, so they are already excluded from both.`,
     };
   },
   // Jupiter's own Token API publishes circulating supply for its tokens, already net of

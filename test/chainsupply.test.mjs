@@ -621,3 +621,165 @@ test('aptos: totals read moments apart (a few thousand APT) still agree', async 
   const s = await readSupply({ method: 'aptos' });
   assert.ok(Math.abs(s.circulating - 889397967.12) < 1e-4);
 });
+
+// Real response shapes captured from https://sei-rest.publicnode.com on 2026-11-23 (pacific-1).
+const SEI_TEAM_1200M = 'sei1letzrrlgdlrpxj6z279fx85hn5u34mm9nrc9hq4e6wxz5c79je2swt6x4a';
+const SEI_TEAM_800M = 'sei1w0fvamykx7v2e6n5x0e2s39m0jz3krejjkpmgc3tmnqdf8p9fy5syg05yv';
+const SEI_ECO_1700M = 'sei18qgau4n88tdaxu9y2t2y2px29yvwp50mk4xctp7grwfj7fkcdn8qvs9ry8';
+const SEI_FDN_700M = 'sei19se8ass0qvpa2cc60ehnv5dtccznnn5m505cug5tg2gwsjqw5drqm5ptnx';
+const SEI_UNLOCK_DIST = 'sei1prndl4f7hg6nsdavrlk6a26ea9a4q4780zjfgp';
+const SEI_GENESIS_DIST = 'sei1z3r0ccsssnvuaheuakul58zlu65rngw7njrjcz';
+const SEI_LEGACY_1 = 'sei1ga833mj6jc6d2lye6j84stug9h2mpxcxuyw5ak';
+const SEI_LEGACY_2 = 'sei15wfxcaz3phxa7hyl9z9wr064nc7zt6y79ywkvw';
+const SEI_LEGACY_3 = 'sei1570e0uvdywv0wp79mz235v6zzuu69268xhvk6x';
+
+function fakeSei({
+  totalUsei = '9250781935022896',
+  pool = [{ denom: 'usei', amount: '513304.109654857840223835' }],
+  accounts = {},
+  gringotts = {},
+  failMatch = null,
+} = {}) {
+  const futureNs = String(BigInt(Date.now() + 86400_000 * 180) * 1_000_000n);
+  const pastNs = String(BigInt(Date.now() - 86400_000 * 30) * 1_000_000n);
+  const defaultAccounts = {
+    [SEI_TEAM_1200M]: { liquid: '73654', staked: ['659999999926442'], unbonding: [] },
+    [SEI_TEAM_800M]: { liquid: '8937209', staked: ['200634927691386'], unbonding: [] },
+    [SEI_ECO_1700M]: { liquid: '413850', staked: [], unbonding: [] },
+    [SEI_FDN_700M]: { liquid: '0', staked: ['699366'], unbonding: [] },
+    [SEI_UNLOCK_DIST]: { liquid: '7575936933546', staked: [], unbonding: [] },
+    [SEI_GENESIS_DIST]: { liquid: '42697592918', staked: ['140000000'], unbonding: [] },
+    [SEI_LEGACY_1]: { liquid: '100000', staked: [], unbonding: [] },
+    [SEI_LEGACY_2]: { liquid: '1000000', staked: [], unbonding: [] },
+    [SEI_LEGACY_3]: { liquid: '1000000', staked: [], unbonding: [] },
+    ...accounts,
+  };
+  const defaultGringotts = {
+    [SEI_TEAM_1200M]: { vesting_timestamps: [pastNs, futureNs], vesting_amounts: ['96', '660000000000000'] },
+    [SEI_TEAM_800M]: { vesting_timestamps: [pastNs, futureNs], vesting_amounts: ['634930628595', '200000006000000'] },
+    [SEI_ECO_1700M]: { vesting_timestamps: [pastNs], vesting_amounts: ['413850'] },
+    [SEI_FDN_700M]: { vesting_timestamps: [pastNs], vesting_amounts: ['699366'] },
+    ...gringotts,
+  };
+
+  globalThis.fetch = async url => {
+    const u = String(url);
+    if (failMatch && u.includes(failMatch)) {
+      return { ok: false, status: 500, json: async () => ({ code: 2, message: 'boom' }) };
+    }
+    const reply = body => ({ ok: true, status: 200, json: async () => body });
+    if (u.endsWith('/cosmos/bank/v1beta1/supply/usei')) {
+      return reply({ amount: { denom: 'usei', amount: totalUsei } });
+    }
+    if (u.endsWith('/cosmos/distribution/v1beta1/community_pool')) {
+      return reply({ pool });
+    }
+    let m = u.match(/\/cosmos\/bank\/v1beta1\/balances\/([^/?]+)\/by_denom\?denom=usei$/);
+    if (m) {
+      const acc = defaultAccounts[m[1]] || { liquid: '0' };
+      return reply({ balance: { denom: 'usei', amount: acc.liquid } });
+    }
+    m = u.match(/\/cosmos\/staking\/v1beta1\/delegations\/([^/?]+)\?pagination\.limit=200(?:&pagination\.key=([^&]+))?$/);
+    if (m) {
+      const acc = defaultAccounts[m[1]] || { staked: [] };
+      if (acc.stakedPages) {
+        const idx = m[2] ? Number(decodeURIComponent(m[2])) : 0;
+        const nextKey = idx + 1 < acc.stakedPages.length ? String(idx + 1) : null;
+        return reply({
+          delegation_responses: acc.stakedPages[idx].map(amount => ({ balance: { denom: 'usei', amount } })),
+          pagination: { next_key: nextKey },
+        });
+      }
+      return reply({
+        delegation_responses: (acc.staked || []).map(amount => ({ balance: { denom: 'usei', amount } })),
+        pagination: { next_key: null },
+      });
+    }
+    m = u.match(/\/cosmos\/staking\/v1beta1\/delegators\/([^/?]+)\/unbonding_delegations\?pagination\.limit=200(?:&pagination\.key=([^&]+))?$/);
+    if (m) {
+      const acc = defaultAccounts[m[1]] || { unbonding: [] };
+      return reply({
+        unbonding_responses: (acc.unbonding || []).length ? [{ entries: acc.unbonding.map(balance => ({ balance })) }] : [],
+        pagination: { next_key: null },
+      });
+    }
+    m = u.match(/\/cosmwasm\/wasm\/v1\/contract\/([^/?]+)\/smart\/([^/?]+)$/);
+    if (m) {
+      assert.equal(Buffer.from(m[2], 'base64').toString('utf8'), '{"info":{}}');
+      return reply({ data: defaultGringotts[m[1]] });
+    }
+    throw new Error('unexpected sei url ' + u);
+  };
+}
+
+test('sei: seed rule subtracts community pool, staked+liquid Gringotts vesting contracts, staging/genesis wallets, and legacy vesting accounts', async () => {
+  const { sei } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  assert.equal(sei.symbol, 'SEI');
+  fakeSei();
+  const s = await readSupply(sei.supply);
+  assert.equal(s.total, 9250781935.022896);
+  assert.equal(s.max, 10000000000);
+  assert.equal(s.checked, true);
+  assert.equal(s.src, 'https://seistream.app/blockchain');
+  // 1 community pool + 4 Gringotts contracts + 2 distribution/genesis wallets + 3 legacy vesting accounts = 10
+  assert.equal(s.excluded.length, 10);
+  const team1200 = s.excluded.find(e => e.holder === SEI_TEAM_1200M);
+  const team800 = s.excluded.find(e => e.holder === SEI_TEAM_800M);
+  assert.ok(Math.abs(team1200.amount - 660000000.000096) < 1e-6, 'staked + liquid SEI in 1.2B Gringotts contract');
+  assert.ok(Math.abs(team800.amount - 200634936.628595) < 1e-6, 'staked + liquid SEI in 800M Gringotts contract');
+  assert.equal(team1200.src, `https://seistream.app/address/${SEI_TEAM_1200M}`);
+  const out = s.excluded.reduce((sum, e) => sum + e.amount, 0);
+  assert.ok(Math.abs(s.total - out - s.circulating) < 1e-6, 'circulating + excluded reconciles to total');
+  assert.ok(Math.abs(s.circulating - 8382528220.140899) < 1e-3);
+});
+
+test('sei: sums paginated delegations and unbonding delegations on excluded accounts', async () => {
+  fakeSei({
+    accounts: {
+      W1: {
+        liquid: '5000000', // 5 SEI
+        stakedPages: [['10000000'], ['25000000']], // 10 + 25 SEI across 2 pages
+        unbonding: ['60000000'], // 60 SEI unbonding
+      },
+    },
+  });
+  const s = await readSupply({
+    method: 'sei',
+    lcd: 'https://sei.test',
+    exclude: [{ holder: 'W1', reason: 'Paginated test wallet' }],
+  });
+  const w1 = s.excluded.find(e => e.holder === 'W1');
+  assert.equal(w1.amount, 100);
+});
+
+test('sei: fails closed if a Gringotts contract holds less SEI than its future unvested schedule', async () => {
+  fakeSei({
+    accounts: {
+      // Simulate locked tokens migrated out of CosmWasm before their unlock date.
+      [SEI_TEAM_1200M]: { liquid: '0', staked: [], unbonding: [] },
+    },
+  });
+  const { sei } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  await assert.rejects(readSupply(sei.supply), /balance below unvested schedule/);
+});
+
+test('sei: fails closed when supply, community pool, bank balance, staking or CosmWasm query errors', async () => {
+  const { sei } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  fakeSei({ totalUsei: '1000000' }); // absurdly small total
+  await assert.rejects(readSupply(sei.supply), /bad total supply/);
+
+  fakeSei({ pool: [] }); // missing usei entry in community pool
+  await assert.rejects(readSupply(sei.supply), /missing usei community pool/);
+
+  for (const failMatch of [
+    '/cosmos/bank/v1beta1/supply/usei',
+    '/cosmos/distribution/v1beta1/community_pool',
+    `/cosmos/bank/v1beta1/balances/${SEI_UNLOCK_DIST}`,
+    `/cosmos/staking/v1beta1/delegations/${SEI_TEAM_1200M}`,
+    `/cosmos/staking/v1beta1/delegators/${SEI_TEAM_800M}/unbonding_delegations`,
+    `/cosmwasm/wasm/v1/contract/${SEI_TEAM_1200M}/smart/`,
+  ]) {
+    fakeSei({ failMatch });
+    await assert.rejects(readSupply(sei.supply));
+  }
+});

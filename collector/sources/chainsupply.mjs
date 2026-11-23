@@ -542,7 +542,152 @@ const METHODS = {
       note: 'Total TON summed from masterchain + workchain shard block value_flow (tonapi.io); excludes TON Believers Fund locker contract (toncenter.com) and active config param 44 suspended early-miner accounts read live via tonapi.io/v2/accounts/_bulk.',
     };
   },
+  // Sei (pacific-1): total usei from x/bank (/supply/usei; /supply/by_denom panics on pacific-1 v6.7),
+  // minus the community pool, Sei's CosmWasm Gringotts vesting contracts (github.com/sei-protocol/gringotts,
+  // reading liquid + staked + unbonding and checking each contract still holds at least its unvested future
+  // tranches), the Gringotts unlock staging wallet, the pacific-1 genesis distributor, and the three legacy
+  // DelayedVestingAccounts from github.com/sei-protocol/sei-chain/pull/4864.
+  async sei(r = {}) {
+    const lcd = r.lcd || 'https://sei-rest.publicnode.com';
+    const explorer = r.explorer || 'https://seistream.app/address/';
+    const [sup, cp] = await Promise.all([
+      getJSON(`${lcd}/cosmos/bank/v1beta1/supply/usei`),
+      getJSON(`${lcd}/cosmos/distribution/v1beta1/community_pool`),
+    ]);
+    const rawTotal = sup?.amount?.amount;
+    if (typeof rawTotal !== 'string' || !/^\d+$/.test(rawTotal)) throw new Error('sei: bad bank supply');
+    const total = seiFromUsei(BigInt(rawTotal));
+    if (!(total > 8e9)) throw new Error('sei: bad total supply ' + total);
+
+    if (!Array.isArray(cp?.pool)) throw new Error('sei: bad community pool');
+    const cpUsei = cp.pool.find(x => x?.denom === 'usei');
+    if (!cpUsei || typeof cpUsei.amount !== 'string') throw new Error('sei: missing usei community pool');
+    const cpAmount = Number(cpUsei.amount) / 1e6;
+    if (!Number.isFinite(cpAmount) || cpAmount < 0) throw new Error('sei: invalid community pool amount');
+
+    const excluded = [];
+    if (cpAmount > 0) {
+      excluded.push({
+        reason: 'Community pool (on-chain treasury)',
+        amount: cpAmount,
+        src: `${lcd}/cosmos/distribution/v1beta1/community_pool`,
+      });
+    }
+
+    const nowMs = Date.now();
+    for (const v of r.vestingContracts || []) {
+      const [heldUsei, smart] = await Promise.all([
+        seiAccountUsei(lcd, v.holder),
+        getJSON(`${lcd}/cosmwasm/wasm/v1/contract/${v.holder}/smart/${SEI_GRINGOTTS_INFO}`),
+      ]);
+      const ts = smart?.data?.vesting_timestamps;
+      const am = smart?.data?.vesting_amounts;
+      if (!Array.isArray(ts) || !Array.isArray(am) || ts.length !== am.length) {
+        throw new Error('sei: bad gringotts vesting schedule for ' + v.holder);
+      }
+      let futureUsei = 0n;
+      for (let i = 0; i < am.length; i++) {
+        if (typeof am[i] !== 'string' || !/^\d+$/.test(am[i])) {
+          throw new Error('sei: bad gringotts tranche amount for ' + v.holder);
+        }
+        if (seiTimestampMs(ts[i]) > nowMs) futureUsei += BigInt(am[i]);
+      }
+      // Sei's gringotts repo includes CosmWasm -> EVM migration scripts; if locked tokens ever move out
+      // before their unlock timestamp, fail closed rather than publish an overstated circulating supply.
+      if (heldUsei + 1_000_000n < futureUsei) {
+        throw new Error(`sei: gringotts contract ${v.holder} balance below unvested schedule`);
+      }
+      if (heldUsei > 0n) {
+        excluded.push({
+          reason: v.reason,
+          holder: v.holder,
+          amount: seiFromUsei(heldUsei),
+          src: explorer + v.holder,
+        });
+      }
+    }
+
+    const items = r.exclude || [];
+    for (let i = 0; i < items.length; i += 3) {
+      const chunk = items.slice(i, i + 3);
+      const balances = await Promise.all(chunk.map(e => seiAccountUsei(lcd, e.holder)));
+      for (let j = 0; j < chunk.length; j++) {
+        if (balances[j] > 0n) {
+          excluded.push({
+            reason: chunk[j].reason,
+            holder: chunk[j].holder,
+            amount: seiFromUsei(balances[j]),
+            src: explorer + chunk[j].holder,
+          });
+        }
+      }
+    }
+
+    const circulating = total - excluded.reduce((s, e) => s + e.amount, 0);
+    if (!(circulating > 0) || !(circulating <= total)) throw new Error('sei: bad circulating supply ' + circulating);
+    return {
+      circulating,
+      total,
+      src: 'https://seistream.app/blockchain',
+      excluded,
+      note: r.note,
+    };
+  },
 };
+
+const SEI_GRINGOTTS_INFO = Buffer.from('{"info":{}}').toString('base64');
+const seiFromUsei = u => Number(u / 1_000_000n) + Number(u % 1_000_000n) / 1e6;
+function seiTimestampMs(raw) {
+  const s = String(raw ?? '');
+  if (!/^\d+$/.test(s)) throw new Error('sei: bad vesting timestamp');
+  const v = BigInt(s);
+  if (v > 10n ** 15n) return Number(v / 1_000_000n);
+  if (v > 10n ** 11n) return Number(v);
+  return Number(v * 1000n);
+}
+
+// Full SEI balance (liquid + staked delegations + unbonding delegations) of one pacific-1 address in usei.
+// Delegated SEI moves out of x/bank into the staking pool, so subtracting a staked vesting contract or
+// treasury wallet requires summing all three.
+async function seiAccountUsei(lcd, addr) {
+  const [bal, del0, unb0] = await Promise.all([
+    getJSON(`${lcd}/cosmos/bank/v1beta1/balances/${addr}/by_denom?denom=usei`),
+    getJSON(`${lcd}/cosmos/staking/v1beta1/delegations/${addr}?pagination.limit=200`),
+    getJSON(`${lcd}/cosmos/staking/v1beta1/delegators/${addr}/unbonding_delegations?pagination.limit=200`),
+  ]);
+  const rawBal = bal?.balance?.amount;
+  if (typeof rawBal !== 'string' || !/^\d+$/.test(rawBal)) throw new Error('sei: bad bank balance for ' + addr);
+  let sum = BigInt(rawBal);
+
+  for (let page = 0, del = del0; ; page++) {
+    if (!Array.isArray(del?.delegation_responses)) throw new Error('sei: bad delegations for ' + addr);
+    for (const d of del.delegation_responses) {
+      const a = d?.balance?.amount;
+      if (typeof a !== 'string' || !/^\d+$/.test(a)) throw new Error('sei: bad delegation amount for ' + addr);
+      sum += BigInt(a);
+    }
+    const next = del.pagination?.next_key;
+    if (!next) break;
+    if (page >= 20) throw new Error('sei: too many delegation pages for ' + addr);
+    del = await getJSON(`${lcd}/cosmos/staking/v1beta1/delegations/${addr}?pagination.limit=200&pagination.key=${encodeURIComponent(next)}`);
+  }
+
+  for (let page = 0, unb = unb0; ; page++) {
+    if (!Array.isArray(unb?.unbonding_responses)) throw new Error('sei: bad unbonding delegations for ' + addr);
+    for (const u of unb.unbonding_responses) {
+      if (!Array.isArray(u?.entries)) throw new Error('sei: bad unbonding entries for ' + addr);
+      for (const e of u.entries) {
+        if (typeof e?.balance !== 'string' || !/^\d+$/.test(e.balance)) throw new Error('sei: bad unbonding balance for ' + addr);
+        sum += BigInt(e.balance);
+      }
+    }
+    const next = unb.pagination?.next_key;
+    if (!next) break;
+    if (page >= 20) throw new Error('sei: too many unbonding pages for ' + addr);
+    unb = await getJSON(`${lcd}/cosmos/staking/v1beta1/delegators/${addr}/unbonding_delegations?pagination.limit=200&pagination.key=${encodeURIComponent(next)}`);
+  }
+  return sum;
+}
 
 export async function readSupply(rule) {
   const f = METHODS[rule?.method];

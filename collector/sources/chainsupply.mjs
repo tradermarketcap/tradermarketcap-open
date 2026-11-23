@@ -542,6 +542,43 @@ const METHODS = {
       note: 'Total TON summed from masterchain + workchain shard block value_flow (tonapi.io); excludes TON Believers Fund locker contract (toncenter.com) and active config param 44 suspended early-miner accounts read live via tonapi.io/v2/accounts/_bulk.',
     };
   },
+  // Celestia: official supply API returns circulating (unlocked) and total supply.
+  // Note on methodology: celestiaorg/supply notes that the API does not adjust circulating
+  // for tokens retroactively locked after TGE (e.g. CIP-31 staking rewards, up to ~1% error).
+  // Tradermarketcap rule is that circulating is never overstated, so we conservatively subtract
+  // 1% of raw circulating supply and list it in excluded with the primary source link.
+  async celestia() {
+    const [c, t] = await Promise.all([
+      getJSON('https://supply.celestia.org/v0/circulating-supply'),
+      getJSON('https://supply.celestia.org/v0/total-supply'),
+    ]);
+    const rawCirc = Number(c), total = Number(t);
+    if (!(rawCirc > 0) || !(total > 0) || rawCirc > total) {
+      throw new Error(`Invalid Celestia supply: circ=${c}, total=${t}`);
+    }
+    const cip31Locked = rawCirc * 0.01;
+    const circ = rawCirc - cip31Locked;
+    const diff = total - rawCirc;
+    const excluded = [
+      ...(diff > 0 ? [{
+        reason: 'Vesting accounts and unvested allocations (non-circulating)',
+        amount: diff,
+        src: 'https://supply.celestia.org',
+      }] : []),
+      {
+        reason: 'Tokens retroactively locked after TGE under CIP-31 (~1% upper bound per celestiaorg/supply methodology)',
+        amount: cip31Locked,
+        src: 'https://github.com/celestiaorg/supply#note-on-methodology',
+      },
+    ];
+    return {
+      circulating: circ,
+      total,
+      src: 'https://supply.celestia.org',
+      excluded,
+      note: 'Celestia official supply API less 1% conservative deduction for retroactively locked tokens under CIP-31 (celestiaorg/supply methodology) so circulating is never overstated',
+    };
+  },
 };
 
 export async function readSupply(rule) {

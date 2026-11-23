@@ -621,3 +621,38 @@ test('aptos: totals read moments apart (a few thousand APT) still agree', async 
   const s = await readSupply({ method: 'aptos' });
   assert.ok(Math.abs(s.circulating - 889397967.12) < 1e-4);
 });
+
+test('celestia: reads circulating and total supply with CIP-31 conservative exclusion', async () => {
+  globalThis.fetch = async url => {
+    const reply = val => ({ ok: true, status: 200, json: async () => val });
+    if (String(url).endsWith('/circulating-supply')) return reply(1000000000);
+    if (String(url).endsWith('/total-supply')) return reply(1200000000);
+    throw new Error('unexpected url: ' + url);
+  };
+  const s = await readSupply({ method: 'celestia' });
+  assert.equal(s.circulating, 990000000); // 1,000,000,000 less 1% CIP-31 locked
+  assert.equal(s.total, 1200000000);
+  assert.equal(s.src, 'https://supply.celestia.org');
+  assert.equal(s.checked, true);
+  assert.equal(s.excluded.length, 2);
+  assert.equal(s.excluded[0].amount, 200000000); // unvested
+  assert.equal(s.excluded[1].amount, 10000000);  // 1% CIP-31
+});
+
+test('celestia: invalid or non-positive supply fails the read', async () => {
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => 0 });
+  await assert.rejects(readSupply({ method: 'celestia' }), /Invalid Celestia supply/);
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => -10 });
+  await assert.rejects(readSupply({ method: 'celestia' }), /Invalid Celestia supply/);
+});
+
+test('celestia: circulating greater than total fails the read', async () => {
+  globalThis.fetch = async url => {
+    const reply = val => ({ ok: true, status: 200, json: async () => val });
+    if (String(url).endsWith('/circulating-supply')) return reply(500);
+    if (String(url).endsWith('/total-supply')) return reply(100);
+    throw new Error('unexpected url: ' + url);
+  };
+  await assert.rejects(readSupply({ method: 'celestia' }), /Invalid Celestia supply/);
+});
+

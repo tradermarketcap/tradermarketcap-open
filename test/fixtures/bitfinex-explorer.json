@@ -1,0 +1,22 @@
+[
+  [
+    [
+      "BTC",
+      [
+        "https://blockstream.info"
+      ]
+    ],
+    [
+      "ETH",
+      [
+        "https://etherscan.io"
+      ]
+    ],
+    [
+      "XRP",
+      [
+        "https://xrpscan.com"
+      ]
+    ]
+  ]
+]

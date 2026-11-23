@@ -621,3 +621,94 @@ test('aptos: totals read moments apart (a few thousand APT) still agree', async 
   const s = await readSupply({ method: 'aptos' });
   assert.ok(Math.abs(s.circulating - 889397967.12) < 1e-4);
 });
+
+test('sei: reads bank supply via /supply/{denom} fallback, subtracts community pool, and circulating is null when circulating: false', async () => {
+  globalThis.fetch = async (url) => {
+    const reply = body => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) });
+    const u = String(url);
+    if (u.includes('/cosmos/bank/v1beta1/supply/by_denom?denom=usei')) {
+      return { ok: false, status: 500, text: async () => 'by_denom: panic' };
+    }
+    if (u.includes('/cosmos/bank/v1beta1/supply/usei')) {
+      return reply({ amount: { denom: 'usei', amount: '10000000000000' } });
+    }
+    if (u.includes('/cosmos/distribution/v1beta1/community_pool')) {
+      return reply({ pool: [{ denom: 'usei', amount: '1000000000000' }] });
+    }
+    throw new Error('unexpected url ' + u);
+  };
+
+  const s = await readSupply({
+    method: 'sei',
+    circulating: false,
+    lcd: 'https://sei-api.polkachu.com',
+    denom: 'usei',
+  });
+
+  assert.equal(s.total, 10000000);
+  assert.equal(s.circulating, null);
+  assert.equal(s.excluded.length, 1);
+  assert.equal(s.excluded[0].reason, 'Community pool (on-chain treasury)');
+  assert.equal(s.excluded[0].amount, 1000000);
+  assert.equal(s.checked, true);
+});
+
+test('sei: computes circulating supply and subtracts excluded accounts when circulating is not false', async () => {
+  globalThis.fetch = async (url) => {
+    const reply = body => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) });
+    const u = String(url);
+    if (u.includes('/cosmos/bank/v1beta1/supply/by_denom?denom=usei')) {
+      return { ok: false, status: 500, text: async () => 'by_denom: panic' };
+    }
+    if (u.includes('/cosmos/bank/v1beta1/supply/usei')) {
+      return reply({ amount: { denom: 'usei', amount: '10000000000000' } });
+    }
+    if (u.includes('/cosmos/distribution/v1beta1/community_pool')) {
+      return reply({ pool: [{ denom: 'usei', amount: '1000000000000' }] });
+    }
+    if (u.includes('/cosmos/bank/v1beta1/balances/sei1treasury/by_denom')) {
+      return reply({ balance: { denom: 'usei', amount: '500000000000' } });
+    }
+    throw new Error('unexpected url ' + u);
+  };
+
+  const s = await readSupply({
+    method: 'sei',
+    lcd: 'https://sei-api.polkachu.com',
+    denom: 'usei',
+    exclude: [{ holder: 'sei1treasury', reason: 'Sei Ecosystem Reserve' }],
+  });
+
+  assert.equal(s.total, 10000000);
+  assert.equal(s.circulating, 8500000);
+  assert.equal(s.excluded.length, 2);
+  assert.equal(s.excluded[0].amount, 1000000);
+  assert.equal(s.excluded[1].amount, 500000);
+  assert.equal(s.checked, true);
+});
+
+test('sei: non-500 network error on by_denom throws instead of falling back', async () => {
+  globalThis.fetch = async () => { throw new Error('network down'); };
+  await assert.rejects(readSupply({ method: 'sei', lcd: 'https://sei-api.polkachu.com' }), /network down/);
+});
+
+test('sei: community pool failure throws rather than silently dropping exclusion', async () => {
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/cosmos/bank/v1beta1/supply/by_denom')) return { ok: false, status: 500, text: async () => 'by_denom: panic' };
+    if (u.includes('/cosmos/bank/v1beta1/supply/usei')) return { ok: true, status: 200, json: async () => ({ amount: { denom: 'usei', amount: '10000000000000' } }) };
+    if (u.includes('/cosmos/distribution/v1beta1/community_pool')) return { ok: false, status: 503, text: async () => 'service unavailable' };
+    throw new Error('unexpected url ' + u);
+  };
+  await assert.rejects(readSupply({ method: 'sei', lcd: 'https://sei-api.polkachu.com' }), /503/);
+});
+
+test('sei: invalid supply fails the read', async () => {
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/cosmos/bank/v1beta1/supply/by_denom')) return { ok: false, status: 500, text: async () => 'by_denom: panic' };
+    if (u.includes('/cosmos/bank/v1beta1/supply/usei')) return { ok: true, status: 200, json: async () => ({ amount: { denom: 'usei', amount: '0' } }) };
+    return { ok: true, status: 200, json: async () => ({ pool: [] }) };
+  };
+  await assert.rejects(readSupply({ method: 'sei', lcd: 'https://sei-api.polkachu.com' }), /bad cosmos supply/);
+});

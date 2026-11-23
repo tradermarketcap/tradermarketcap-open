@@ -302,3 +302,57 @@ test('pyth: a treasury wallet that has moved fails the read rather than guessing
     assert.ok(Math.abs(s.total - 9999958592.238969) < 0.01);
   } finally { restore(); }
 });
+
+// Fake algod: /v2/ledger/supply returns the given microAlgos total, /v2/accounts/<addr> returns
+// ACCOUNTS[addr] microAlgos. algod answers 200 with amount 0 for closed accounts; a missing
+// key answers 404, which must now fail the read rather than count 0.
+const ALGO_ACCOUNTS = {
+  WALLET_A: '5000000000', // 5,000 ALGO
+  WALLET_B: '2500000000', // 2,500 ALGO
+  CLOSED_WALLET: '0',
+};
+function fakeAlgod(totalMicro) {
+  globalThis.fetch = async url => {
+    const u = String(url);
+    if (u.endsWith('/v2/ledger/supply')) return { ok: true, status: 200, json: async () => ({ 'total-money': String(totalMicro) }) };
+    const m = u.match(/\/v2\/accounts\/([^/?]+)$/);
+    if (m && m[1] in ALGO_ACCOUNTS) return { ok: true, status: 200, json: async () => ({ amount: ALGO_ACCOUNTS[m[1]] }) };
+    if (m) return { ok: false, status: 404, json: async () => ({}) };
+    throw new Error('unexpected url ' + u);
+  };
+}
+const ALGO_RULE = { method: 'algorand', api: 'https://algod.test', exclude: [
+  { holder: 'WALLET_A', reason: 'Algorand Foundation treasury' },
+  { holder: 'WALLET_B', reason: 'Algorand Foundation governance' },
+  { holder: 'CLOSED_WALLET', reason: 'Algorand Foundation treasury' },
+] };
+
+test('algorand: foundation wallets are read live and subtracted from total supply', async () => {
+  fakeAlgod(9821368789728523); // ~9.82B ALGO in microAlgos
+  const s = await readSupply(ALGO_RULE);
+  assert.ok(Math.abs(s.total - 9821368789.728523) < 0.001);
+  assert.ok(Math.abs(s.circulating - (9821368789.728523 - 7500)) < 0.001);
+  assert.equal(s.excluded.length, 3);
+  assert.equal(s.excluded[2].amount, 0); // closed account answers 200 amount 0
+});
+
+test('algorand: a nonsense total fails the read', async () => {
+  fakeAlgod(1000);
+  await assert.rejects(readSupply(ALGO_RULE), /bad Algorand total supply/);
+});
+
+test('algorand: reportedFloor above the live wallet sum is subtracted instead', async () => {
+  fakeAlgod(9821368789728523);
+  const s = await readSupply({ ...ALGO_RULE, reportedFloor: 8000, reportedFloorSrc: 'https://example.com/report.pdf' });
+  assert.ok(Math.abs(s.circulating - (9821368789.728523 - 8000)) < 0.001);
+  assert.equal(s.excluded.length, 4);
+  assert.equal(s.excluded[3].amount, 500); // 8000 floor - 7500 live
+  assert.equal(s.excluded[3].src, 'https://example.com/report.pdf');
+});
+
+test('algorand: reportedFloor below the live wallet sum changes nothing', async () => {
+  fakeAlgod(9821368789728523);
+  const s = await readSupply({ ...ALGO_RULE, reportedFloor: 100 });
+  assert.ok(Math.abs(s.circulating - (9821368789.728523 - 7500)) < 0.001);
+  assert.equal(s.excluded.length, 3);
+});

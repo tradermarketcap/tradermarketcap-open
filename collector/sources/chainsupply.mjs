@@ -225,6 +225,32 @@ const METHODS = {
     }
     return { circulating: total - excluded.reduce((s, e) => s + e.amount, 0), total, src: r.explorer || r.lcd, excluded, note: r.note };
   },
+  // Algorand: total ALGO from a public algod node, minus the Algorand Foundation wallets the Foundation
+  // publishes at algorand.co/algorand-foundation/transparency (archived copy cited in coins.json; the
+  // list is embedded there; each balance is read live. algod answers 200 with amount 0 for closed
+  // accounts, so any request error fails the read rather than counting 0).
+  async algorand(r) {
+    const api = r.api;
+    const total = Number((await getJSON(`${api}/v2/ledger/supply`))['total-money']) / 1e6;
+    if (!(total > 8e9)) throw new Error('bad Algorand total supply ' + total);
+    const excluded = [];
+    for (const e of r.exclude || []) {
+      const amount = Number((await getJSON(`${api}/v2/accounts/${e.holder}`)).amount) / 1e6;
+      excluded.push({ reason: e.reason, holder: e.holder, amount, src: `https://allo.info/account/${e.holder}` });
+    }
+    // The Foundation's published wallet list can drift from its reported balance; when a
+    // reportedFloor is configured, subtract the larger of the live wallet sum and the floor
+    // (same pattern as bnb's burn-tracker cap).
+    let subtract = excluded.reduce((s, e) => s + e.amount, 0);
+    if (r.reportedFloor) {
+      const floor = Number(r.reportedFloor);
+      if (floor > subtract) {
+        excluded.push({ reason: 'Algorand Foundation reported balance (Q2 2026 transparency report)', amount: floor - subtract, src: r.reportedFloorSrc });
+        subtract = floor;
+      }
+    }
+    return { circulating: total - subtract, total, src: api, excluded, note: r.note };
+  },
   // BNB: chain-read ceiling checked against BNB Chain's burn tracker; the lower one is circulating (see top of file).
   async bnb() {
     const [hub, dead, zero, tracker] = await Promise.all([bscBalance(BSC_TOKENHUB), bscBalance(BURN), bscBalance(BSC_ZERO), bnbTracker()]);

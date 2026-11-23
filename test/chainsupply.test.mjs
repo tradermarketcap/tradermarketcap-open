@@ -143,14 +143,28 @@ test('sui: a broken API answer fails the read', async () => {
   finally { restore(); }
 });
 
-// AERO on Base. Values below are the live reads on 2026-11-22, block 60,754,622:
-// totalSupply 2,149,167,194 and sAERO holding 1,080,292,319 AERO. Aero's own upgrade page
-// publishes circulating as total less sAERO (~1.07B), which these two numbers reproduce.
+// AERO on Base. Values below are the live reads on 2026-11-23, Base block 61,194,455:
+// new AERO totalSupply 2,149,873,046, sAERO 1,080,578,812, and the two migration vaults
+// 274,913,277 + 10,614,436. Aero's upgrade page publishes ~1.07B as the MAXIMUM circulating
+// supply after every holder upgrades and says tokens never upgraded never reach circulation,
+// so AERO parked in the migration contracts is not circulating. The three exclusions
+// reconcile: 783,766,521 circulating + 285,527,713 in the vaults = 1,069,294,234, which is
+// exactly total less sAERO, i.e. the published ~1.07B maximum.
 const AERO = '0x3f5bf3edac59d650d8fdf9657a71f2f904a3a4ee';
+const AERO_SAERO = '0xbf7977e1521e9a3032bf7243ee4712f311f13915';
+const AERO_VAULTS = ['0x22a2f7340a3fb4c7c389d91ee954766b12476721', '0x6dae95fe833f190640db1176f8c8a2e50c6a66c0'];
+const AERO_EXCLUDE = [
+  { chain: 'base', holder: '0xBF7977E1521e9a3032bf7243Ee4712f311f13915', reason: 'sAERO' },
+  { chain: 'base', holder: '0x22a2F7340a3fB4C7C389D91eE954766B12476721', reason: 'migration vault' },
+  { chain: 'base', holder: '0x6daE95FE833f190640dB1176F8C8a2e50C6a66c0', reason: 'migration vault' },
+];
 
-function fakeBase({ total = '0x' + (2149167194n * 10n ** 18n).toString(16),
-                    saero = '0x' + (1080292319n * 10n ** 18n).toString(16),
-                    saeroFails = false } = {}) {
+function fakeBase({ total = '0x' + (2149873046n * 10n ** 18n).toString(16),
+                    saero = '0x' + (1080578812n * 10n ** 18n).toString(16),
+                    vault1 = '0x' + (274913277n * 10n ** 18n).toString(16),
+                    vault2 = '0x' + (10614436n * 10n ** 18n).toString(16),
+                    failAt = null } = {}) {
+  const balances = { [AERO_SAERO]: saero, [AERO_VAULTS[0]]: vault1, [AERO_VAULTS[1]]: vault2 };
   const seen = [];
   globalThis.fetch = async (url, opts = {}) => {
     const req = JSON.parse(opts.body);
@@ -159,43 +173,45 @@ function fakeBase({ total = '0x' + (2149167194n * 10n ** 18n).toString(16),
     seen.push({ to: to.toLowerCase(), selector: data.slice(0, 10) });
     if (data.startsWith('0x313ce567')) return reply('0x' + (18).toString(16).padStart(64, '0'));
     if (data.startsWith('0x18160ddd')) return reply(total);
-    // balanceOf(holder): answer 0 for anything that is not the sAERO contract
     const holder = '0x' + data.slice(-40);
-    if (holder === '0xbf7977e1521e9a3032bf7243ee4712f311f13915') {
-      if (saeroFails) return { ok: false, status: 500, json: async () => ({ error: 'boom' }) };
-      return reply(saero);
-    }
-    return reply('0x' + (0n).toString(16));
+    if (failAt === holder) return { ok: false, status: 500, json: async () => ({ error: 'boom' }) };
+    return reply(balances[holder] || '0x' + (0n).toString(16));
   };
   return seen;
 }
 
-test('aero: circulating is total supply minus the sAERO staked balance, not the migration reserves', async () => {
+const aeroRule = () => ({ method: 'tokens', parts: [{ chain: 'base', address: '0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee' }], exclude: AERO_EXCLUDE });
+
+test('aero: circulating subtracts sAERO and both migration vaults, and the three reconcile to the published ~1.07B maximum', async () => {
   const seen = fakeBase();
-  const s = await readSupply({
-    method: 'tokens',
-    parts: [{ chain: 'base', address: '0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee' }],
-    exclude: [{ chain: 'base', holder: '0xBF7977E1521e9a3032bf7243Ee4712f311f13915', reason: 'sAERO' }],
-  });
-  assert.equal(s.total, 2149167194);
-  // the excluded balance is subtracted exactly once
-  const sAero = s.excluded.find(e => e.holder.toLowerCase() === '0xbf7977e1521e9a3032bf7243ee4712f311f13915');
-  assert.ok(sAero, 'sAERO appears in excluded');
-  assert.equal(sAero.amount, 1080292319);
-  assert.equal(s.circulating, 2149167194 - 1080292319);
-  // the published figure is ~1.07B; refusing to also subtract the migration reserves keeps us there
-  assert.ok(Math.abs(s.circulating - 1.07e9) / 1.07e9 < 0.01);
-  // only the live contract is queried
-  assert.ok(seen.every(c => c.to === AERO || c.to === '0xbf7977e1521e9a3032bf7243ee4712f311f13915'));
+  const s = await readSupply(aeroRule());
+  assert.equal(s.total, 2149873046);
+  for (const h of [AERO_SAERO, ...AERO_VAULTS]) {
+    const e = s.excluded.find(x => x.holder.toLowerCase() === h);
+    assert.ok(e, `excluded ${h}`);
+  }
+  // each excluded balance is subtracted exactly once
+  assert.equal(s.excluded.find(e => e.holder.toLowerCase() === AERO_SAERO).amount, 1080578812);
+  assert.equal(s.excluded.find(e => e.holder.toLowerCase() === AERO_VAULTS[0]).amount, 274913277);
+  assert.equal(s.excluded.find(e => e.holder.toLowerCase() === AERO_VAULTS[1]).amount, 10614436);
+  assert.equal(s.circulating, 2149873046 - 1080578812 - 274913277 - 10614436);
+  // circulating + still-unclaimed vault balances == total less sAERO == Aero's published max (~1.07B)
+  const max = s.circulating + 274913277 + 10614436;
+  assert.ok(Math.abs(max - 1.07e9) < 1e7, `reconciles to ~1.07B, got ${max}`);
+  // circulating can never exceed the published maximum
+  assert.ok(s.circulating < 1.07e9);
+  // only the live AERO contract is queried
+  assert.ok(seen.every(c => c.to === AERO));
+});
+
+test('aero: a failed migration-vault balance read throws instead of publishing an overstated circulating', async () => {
+  fakeBase({ failAt: AERO_VAULTS[0] });
+  await assert.rejects(readSupply(aeroRule()));
 });
 
 test('aero: a failed sAERO balance read throws instead of publishing an overstated circulating', async () => {
-  fakeBase({ saeroFails: true });
-  await assert.rejects(readSupply({
-    method: 'tokens',
-    parts: [{ chain: 'base', address: '0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee' }],
-    exclude: [{ chain: 'base', holder: '0xBF7977E1521e9a3032bf7243Ee4712f311f13915', reason: 'sAERO' }],
-  }));
+  fakeBase({ failAt: AERO_SAERO });
+  await assert.rejects(readSupply(aeroRule()));
 });
 
 // Real response shapes captured from tonapi.io and toncenter.com on 2026-11-22.

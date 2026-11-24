@@ -543,10 +543,14 @@ const METHODS = {
     };
   },
   // Sei (pacific-1): total usei from x/bank (/supply/usei; /supply/by_denom panics on pacific-1 v6.7),
-  // minus the community pool, Sei's CosmWasm Gringotts vesting contracts (github.com/sei-protocol/gringotts,
-  // reading liquid + staked + unbonding and checking each contract still holds at least its unvested future
-  // tranches), the Gringotts unlock staging wallet, the pacific-1 genesis distributor, and the three legacy
-  // DelayedVestingAccounts from github.com/sei-protocol/sei-chain/pull/4864.
+  // with verified non-circulating balances read live into excluded: the community pool, Sei's active
+  // CosmWasm code_id 5530 Gringotts vesting contracts (github.com/sei-protocol/gringotts, summing liquid +
+  // staked + unbonding and checking each contract still holds at least its unvested future tranches),
+  // their unlock_distribution_address staging wallet, the pacific-1 genesis distributor, and the three
+  // legacy DelayedVestingAccounts from github.com/sei-protocol/sei-chain/pull/4864. When circulating is
+  // set to false (because the 1.7B Ecosystem Reserve and 700M Foundation Gringotts contracts finished their
+  // CosmWasm schedules in Aug 2025 and dispersed to unlabelled wallets), circulating is null (same shape
+  // as ENA, PYTH and QNT) rather than publishing an overstated ceiling.
   async sei(r = {}) {
     const lcd = r.lcd || 'https://sei-rest.publicnode.com';
     const explorer = r.explorer || 'https://seistream.app/address/';
@@ -623,10 +627,11 @@ const METHODS = {
       }
     }
 
-    const circulating = total - excluded.reduce((s, e) => s + e.amount, 0);
-    if (!(circulating > 0) || !(circulating <= total)) throw new Error('sei: bad circulating supply ' + circulating);
+    const ceiling = total - excluded.reduce((s, e) => s + e.amount, 0);
+    if (!(ceiling > 0) || !(ceiling <= total)) throw new Error('sei: bad circulating supply ' + ceiling);
+    const publish = r.circulating !== false;
     return {
-      circulating,
+      circulating: publish ? ceiling : null,
       total,
       src: 'https://seistream.app/blockchain',
       excluded,

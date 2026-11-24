@@ -712,25 +712,38 @@ function fakeSei({
   };
 }
 
-test('sei: seed rule subtracts community pool, staked+liquid Gringotts vesting contracts, staging/genesis wallets, and legacy vesting accounts', async () => {
+test('sei: seed rule reads bank total and active Gringotts/staging exclusions while withholding circulating', async () => {
   const { sei } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
   assert.equal(sei.symbol, 'SEI');
+  assert.equal(sei.supply.circulating, false, 'shipped rule leaves circulating unpublished rather than overstating');
+  assert.match(sei.supply.note, /Circulating supply is not published/);
+  assert.match(sei.supply.note, /withdrawn_unlocked/);
+  assert.match(sei.supply.note, /genesis\.json/);
   fakeSei();
   const s = await readSupply(sei.supply);
   assert.equal(s.total, 9250781935.022896);
+  assert.equal(s.circulating, null, 'circulating is withheld, never overstated');
   assert.equal(s.max, 10000000000);
   assert.equal(s.checked, true);
   assert.equal(s.src, 'https://seistream.app/blockchain');
-  // 1 community pool + 4 Gringotts contracts + 2 distribution/genesis wallets + 3 legacy vesting accounts = 10
-  assert.equal(s.excluded.length, 10);
+  // 1 community pool + 2 active Gringotts contracts + 2 staging/genesis wallets + 3 legacy vesting accounts = 8
+  assert.equal(s.excluded.length, 8);
+  assert.ok(!s.excluded.some(e => e.holder === SEI_ECO_1700M || e.holder === SEI_FDN_700M),
+    'fully vested 2025-08-15 dust shells are not listed as active reserve exclusions');
   const team1200 = s.excluded.find(e => e.holder === SEI_TEAM_1200M);
   const team800 = s.excluded.find(e => e.holder === SEI_TEAM_800M);
   assert.ok(Math.abs(team1200.amount - 660000000.000096) < 1e-6, 'staked + liquid SEI in 1.2B Gringotts contract');
   assert.ok(Math.abs(team800.amount - 200634936.628595) < 1e-6, 'staked + liquid SEI in 800M Gringotts contract');
   assert.equal(team1200.src, `https://seistream.app/address/${SEI_TEAM_1200M}`);
+});
+
+test('sei: computes circulating = total - excluded when circulating is enabled', async () => {
+  const { sei } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  fakeSei();
+  const s = await readSupply({ ...sei.supply, circulating: true });
   const out = s.excluded.reduce((sum, e) => sum + e.amount, 0);
   assert.ok(Math.abs(s.total - out - s.circulating) < 1e-6, 'circulating + excluded reconciles to total');
-  assert.ok(Math.abs(s.circulating - 8382528220.140899) < 1e-3);
+  assert.ok(Math.abs(s.circulating - 8382528221.254115) < 1e-3);
 });
 
 test('sei: sums paginated delegations and unbonding delegations on excluded accounts', async () => {

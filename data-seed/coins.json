@@ -225,20 +225,19 @@
       "lcd": "https://sei-rest.publicnode.com",
       "explorer": "https://seistream.app/address/",
       "max": 10000000000,
+      "circulating": false,
       "vestingContracts": [
-        { "holder": "sei1letzrrlgdlrpxj6z279fx85hn5u34mm9nrc9hq4e6wxz5c79je2swt6x4a", "reason": "Sei Gringotts vesting contract (1.2B SEI Team schedule through Aug 2029)" },
-        { "holder": "sei1w0fvamykx7v2e6n5x0e2s39m0jz3krejjkpmgc3tmnqdf8p9fy5syg05yv", "reason": "Sei Gringotts vesting contract (800M SEI contributor/investor schedule through Aug 2027)" },
-        { "holder": "sei18qgau4n88tdaxu9y2t2y2px29yvwp50mk4xctp7grwfj7fkcdn8qvs9ry8", "reason": "Sei Gringotts vesting contract (1.7B SEI Ecosystem Reserve schedule)" },
-        { "holder": "sei19se8ass0qvpa2cc60ehnv5dtccznnn5m505cug5tg2gwsjqw5drqm5ptnx", "reason": "Sei Gringotts vesting contract (700M SEI Foundation schedule)" }
+        { "holder": "sei1letzrrlgdlrpxj6z279fx85hn5u34mm9nrc9hq4e6wxz5c79je2swt6x4a", "reason": "Sei Gringotts Team vesting contract (660M of 1.2B SEI unvested through Aug 2029)" },
+        { "holder": "sei1w0fvamykx7v2e6n5x0e2s39m0jz3krejjkpmgc3tmnqdf8p9fy5syg05yv", "reason": "Sei Gringotts Contributors/Investors vesting contract (~200.6M of 800M SEI through Aug 2027)" }
       ],
       "exclude": [
-        { "holder": "sei1prndl4f7hg6nsdavrlk6a26ea9a4q4780zjfgp", "reason": "Sei Gringotts unlock distribution staging wallet" },
+        { "holder": "sei1prndl4f7hg6nsdavrlk6a26ea9a4q4780zjfgp", "reason": "Sei Gringotts Team/Contributors unlock staging wallet" },
         { "holder": "sei1z3r0ccsssnvuaheuakul58zlu65rngw7njrjcz", "reason": "Sei pacific-1 genesis distributor wallet" },
         { "holder": "sei1ga833mj6jc6d2lye6j84stug9h2mpxcxuyw5ak", "reason": "Cosmos DelayedVestingAccount (locked until year 3000)" },
         { "holder": "sei15wfxcaz3phxa7hyl9z9wr064nc7zt6y79ywkvw", "reason": "Cosmos DelayedVestingAccount (locked until year 3000)" },
         { "holder": "sei1570e0uvdywv0wp79mz235v6zzuu69268xhvk6x", "reason": "Cosmos DelayedVestingAccount (locked until year 3000)" }
       ],
-      "note": "Total SEI from pacific-1 bank supply (/cosmos/bank/v1beta1/supply/usei), minus the community pool, Sei's CosmWasm Gringotts vesting contracts on code_id 5530 (liquid + staked + unbonding, checked against each contract's unvested schedule; github.com/sei-protocol/gringotts), the Gringotts unlock staging wallet, the pacific-1 genesis distributor (github.com/sei-protocol/chain-configs), and the three legacy DelayedVestingAccounts (github.com/sei-protocol/sei-chain/pull/4864). Unlabeled Foundation or Ecosystem operational wallets after vesting unlock are not publicly listed; public validator staking counts as circulating."
+      "note": "Circulating supply is not published: ~868.25M SEI is provably locked or staged on-chain and reported in excluded — the two active CosmWasm code_id 5530 Gringotts contracts (sei1letzrrl... holding 660M unvested of the 1.2B Team schedule through Aug 2029, and sei1w0fvamy... holding 200.63M of the 800M Contributors schedule through Aug 2027; github.com/sei-protocol/gringotts), their unlock_distribution_address staging wallet (sei1prndl4f..., ~7.58M SEI), the pacific-1 genesis distributor (sei1z3r0..., ~42.84K SEI), the community pool, and three year-3000 DelayedVestingAccounts (github.com/sei-protocol/sei-chain/pull/4864). However, the other two code_id 5530 Gringotts contracts completed their CosmWasm schedules on 15 Aug 2025: Ecosystem Reserve (sei18qgau4n..., withdrawn_unlocked = 1,699,999,999.59 SEI to sei19r05vk4..., which now holds ~9.84 SEI; 0.41 SEI dust left) and Foundation (sei19se8ass..., withdrawn_unlocked = 699,999,999.30 SEI to sei1e9lv252..., which now holds ~0.96 SEI; 0.70 SEI dust left). Because pacific-1/genesis.json (github.com/sei-protocol/chain-configs) minted 8.5B SEI to sei1z3r0... with an empty app_state.vesting and Sei publishes neither Foundation/Ecosystem treasury wallet addresses nor a first-party circulating-supply API, unspent reserve and foundation holdings sit in unlabelled wallets; publishing the ~8.38B on-chain ceiling would overstate circulating supply. Per the rule that circulating is never overstated, circulating stays unpublished (same shape as ENA, PYTH and QNT) while live bank total (/cosmos/bank/v1beta1/supply/usei) and all provable on-chain exclusions are reported."
     }
   }
 }

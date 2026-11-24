@@ -621,3 +621,82 @@ test('aptos: totals read moments apart (a few thousand APT) still agree', async 
   const s = await readSupply({ method: 'aptos' });
   assert.ok(Math.abs(s.circulating - 889397967.12) < 1e-4);
 });
+
+// Real response shapes from https://api.avax.network/ext/bc/P and the C-chain RPC, captured 2026-11-24.
+// Supply and stake are nAVAX (1e9 = 1 AVAX); the burn balance is wei (1e18 = 1 AVAX).
+const AVAX_SUPPLY = '476881554546723732';   // platform.getCurrentSupply
+const AVAX_STAKE = '222694454659236729';    // platform.getTotalStake
+const AVAX_BURN_HEX = '0x44569cc53d821463951d0'; // eth_getBalance(burn) = 5,163,498.197253506 AVAX
+const AVAX_BURN_ADDR = '0x0100000000000000000000000000000000000000';
+
+// Fake fetch: answers the P-chain methods and the C-chain burn balance, and records them.
+function fakeAvax({ supply = AVAX_SUPPLY, stake = AVAX_STAKE, burn = AVAX_BURN_HEX, badBurn = false } = {}) {
+  const methods = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const body = JSON.parse(opts.body);
+    methods.push(body.method);
+    const reply = x => ({ ok: true, status: 200, json: async () => x });
+    if (body.method === 'platform.getCurrentSupply') return reply({ result: { supply, height: '25937199' } });
+    if (body.method === 'platform.getTotalStake') return reply({ result: stake === null ? {} : { stake, weight: stake } });
+    if (body.method === 'eth_getBalance') {
+      assert.equal(body.params[0], AVAX_BURN_ADDR);
+      return reply({ result: badBurn ? 'not-hex' : burn });
+    }
+    throw new Error('unexpected method ' + body.method);
+  };
+  return methods;
+}
+
+test('avax: circulating is P-chain supply minus locked stake and burned AVAX', async () => {
+  const methods = fakeAvax();
+  const s = await readSupply({ method: 'avax' });
+  assert.deepEqual(methods.sort(), ['eth_getBalance', 'platform.getCurrentSupply', 'platform.getTotalStake']);
+  const supply = 476881554.5467237;
+  const staked = 222694454.65923673;
+  const burned = 5163498.197253506;
+  assert.ok(Math.abs(s.total - (supply - burned)) < 1e-3, 'total is supply minus burn');
+  assert.ok(Math.abs(s.circulating - (supply - burned - staked)) < 1e-3);
+  assert.ok(s.circulating > 0 && s.circulating < s.total, 'stake is actually subtracted');
+  assert.equal(s.excluded.length, 2);
+  const burn = s.excluded.find(e => /burn/i.test(e.reason));
+  assert.ok(burn, 'burned AVAX is listed as excluded');
+  assert.equal(burn.holder, AVAX_BURN_ADDR);
+  assert.equal(burn.src, 'https://snowtrace.io/address/' + AVAX_BURN_ADDR);
+  const stake = s.excluded.find(e => /stake/i.test(e.reason));
+  assert.equal(stake.src, 'https://api.avax.network/ext/bc/P');
+  assert.equal(s.checked, true);
+});
+
+test('avax: the P-chain supply is an upper bound, so a burn of zero never raises circulating', async () => {
+  fakeAvax({ burn: '0x0' });
+  const s = await readSupply({ method: 'avax' });
+  assert.equal(s.total, 476881554.5467237);
+  assert.equal(s.excluded.find(e => /burn/i.test(e.reason)).amount, 0);
+});
+
+test('avax: a missing stake fails the read instead of publishing NaN', async () => {
+  fakeAvax({ stake: null });
+  await assert.rejects(() => readSupply({ method: 'avax' }), /AVAX P-Chain stake/);
+});
+
+test('avax: a nonsense supply is rejected rather than published', async () => {
+  fakeAvax({ supply: '1000' });
+  await assert.rejects(() => readSupply({ method: 'avax' }), /AVAX total supply/);
+});
+
+test('avax: a malformed burn balance fails the read', async () => {
+  fakeAvax({ badBurn: true });
+  await assert.rejects(() => readSupply({ method: 'avax' }), /bad burn balance/);
+});
+
+test('avax: stake above supply is refused rather than published', async () => {
+  fakeAvax({ stake: '999000000000000000' });
+  await assert.rejects(() => readSupply({ method: 'avax' }), /exceeds supply/);
+});
+
+test('avax: the seed rule uses the fixed official P-chain endpoint and no rpc override', async () => {
+  const { avalanche } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  assert.equal(avalanche.symbol, 'AVAX');
+  assert.equal(avalanche.supply.method, 'avax');
+  assert.equal(avalanche.supply.rpc, undefined);
+});

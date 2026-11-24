@@ -8,6 +8,8 @@ import { resetSupply } from './trac.mjs';
 import { extraSupply } from './extra.mjs';
 
 const BURN = '0x000000000000000000000000000000000000dEaD';
+// Avalanche's C-chain burn address: base fees are sent here and can never move.
+const AVAX_BURN = '0x0100000000000000000000000000000000000000';
 const LINK_TOKEN = '0x514910771AF9Ca656af840dff83E8264EcF986CA'; // Chainlink ERC-20 on Ethereum
 
 // BNB on BNB Smart Chain (BSC). BSC mints no new BNB: validators earn fees only. Every BNB that existed when BSC
@@ -282,6 +284,43 @@ const METHODS = {
     const c = Number(await getJSON(url));
     if (!(c > 0)) throw new Error('bad totalcoins');
     return { circulating: c, total: c, src: `https://chainz.cryptoid.info/${r.coin}/` };
+  },
+  // AVAX: P-chain supply minus stake and burned AVAX.
+  async avax() {
+    const pchain = 'https://api.avax.network/ext/bc/P';
+    const call = async method => {
+      const r = await getJSON(pchain, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: {} }),
+      });
+      if (r.error) throw new Error(`avax ${method}: ${r.error.message || 'rpc error'}`);
+      if (!r.result) throw new Error(`avax ${method}: empty result`);
+      return r.result;
+    };
+    const [sup, stk] = await Promise.all([call('platform.getCurrentSupply'), call('platform.getTotalStake')]);
+    // Both are nAVAX (1e9 per AVAX).
+    const supply = Number(sup.supply) / 1e9;
+    const staked = Number(stk.stake) / 1e9;
+    if (!(supply > 1e8)) throw new Error('bad AVAX total supply ' + sup.supply);
+    if (!(staked >= 0)) throw new Error('bad AVAX P-Chain stake ' + stk.stake);
+    if (staked > supply) throw new Error(`avax: stake ${staked} exceeds supply ${supply}`);
+    // getCurrentSupply is an upper bound: it does not account for burnt tokens. C-chain base fees are burnt to this
+    // address, so its balance is read (wei, 1e18 per AVAX) and subtracted from both total and circulating.
+    const burnHex = await evm('avax', 'eth_getBalance', [AVAX_BURN, 'latest']);
+    if (typeof burnHex !== 'string' || !/^0x[0-9a-f]+$/i.test(burnHex)) throw new Error('avax: bad burn balance');
+    const burned = Number(BigInt(burnHex) / 10n ** 12n) / 1e6;
+    const excluded = [
+      { reason: 'Burned (C-chain base fees sent to the burn address)', holder: AVAX_BURN, amount: burned, src: `${EXPLORER.avax}/address/${AVAX_BURN}` },
+      { reason: 'P-chain validator and delegator stake (locked)', amount: staked, src: pchain },
+    ];
+    return {
+      circulating: supply - burned - staked,
+      total: supply - burned,
+      src: pchain,
+      excluded,
+      note: 'P-chain supply minus stake and burned AVAX',
+    };
   },
   async nervos() {
     const url = 'https://mainnet-api.explorer.nervos.org/api/v1/market_data/';

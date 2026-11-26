@@ -41,6 +41,10 @@
   "tap": { "symbol": "TAP", "name": "TAP", "chains": ["trac"], "venues": {}, "always": true,
     "links": { "contract": "https://etherscan.io/token/0x5e7F6e008C6d9D7AD4c7EB75Bd4ce62864cc7454" },
     "supply": { "method": "tap", "max": 21000000 } },
+  "monad": { "symbol": "MON", "name": "Monad", "supply": { "method": "custom", "chain": "monad", "exclude": [
+    { "holder": "0x1234567890abcdef1234567890abcdef12345678", "reason": "Team allocation", "src": "https://monad.org/docs/team-allocation" },
+    { "holder": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd", "reason": "Treasury", "src": "https://monad.org/docs/treasury" }
+  ] } },
   "pax-gold": {"symbol": "PAXG", "name": "PAX Gold", "supply": {"method": "tokens", "parts": [{"chain": "eth", "address": "0x45804880de22913dafe09f4980848ece6ecbaf78"}], "noBurn": true, "note": "Each token is backed by one fine troy ounce of gold held by Paxos, so all tokens in existence count."}},
   "spacex-ondo-tokenized": {"symbol": "SPCXON", "name": "SpaceX Ondo Tokenized", "supply": {"method": "tokens", "parts": [{"chain": "eth", "address": "0xc9eef266834730340a55b6cc24621b31baf55581"}], "noBurn": true, "note": "Tokenized stock issued by Ondo Global Markets. Every token is backed 1:1, so all tokens in existence count."}},
   "palantir-technologies-ondo-tokenized": {"symbol": "PLTRON", "name": "Palantir Technologies Ondo Tokenized", "supply": {"method": "tokens", "parts": [{"chain": "eth", "address": "0x0c666485b02f7a87d21add7aeb9f5e64975aa490"}], "noBurn": true, "note": "Tokenized stock issued by Ondo Global Markets. Every token is backed 1:1, so all tokens in existence count."}},

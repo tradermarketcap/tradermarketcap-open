@@ -34,6 +34,12 @@ const VVV = '0xacfE6019Ed1A7Dc6f7B508C02d1b04ec88cC21bf';
 const VVV_STATS = 'https://api.venice.ai/api/app/vvv/vvv_stats';
 const VVV_BURN_STATS = 'https://api.venice.ai/api/app/vvv/vvv_burn_stats';
 const ZERO = '0x0000000000000000000000000000000000000000';
+// ASTER (Aster): BEP-20 on BNB Chain, named in Aster's own token overview
+// (docs.asterdex.com/usdaster-token/overview.md). Burns go to 0x…dEaD and do not lower totalSupply();
+// tokenomics (docs.asterdex.com/usdaster-token/tokenomics.md) keep burning until 3B.
+const ASTER = '0x000Ae314E2A2172a039B26378814C252734f556A';
+const ASTER_DOCS = 'https://docs.asterdex.com/usdaster-token/tokenomics.md';
+const ASTER_OVERVIEW = 'https://docs.asterdex.com/usdaster-token/overview.md';
 // WLD (Worldcoin): the ERC-20 on Ethereum holds the whole 10B supply. WLD on Optimism is an OptimismMintableERC20 whose
 // remoteToken() is the Ethereum WLD and whose bridge is OP's L2StandardBridge (0x4200...0010): every WLD there is
 // backed by WLD locked in OP Mainnet's L1StandardBridge on Ethereum, so it is checked, not added. World Chain's WLD is
@@ -493,6 +499,38 @@ const METHODS = {
         ...WLD_WORLD_WALLETS.map(([h, reason], i) => ({ reason: `${reason}, per World's whitepaper`, holder: h, amount: held[i], src: WLD_WHITEPAPER })).filter(e => e.amount > 0),
       ],
       note: `Total read from Ethereum, where the whole supply is minted: ${fmt(total)} WLD, less ${dead.toFixed(2)} at the burn address. The ${fmt(opTotal)} WLD on Optimism (${EXPLORER.optimism}/token/${WLD_OP}) are bridged copies (remoteToken = Ethereum WLD, OP standard bridge) backed by ${fmt(lockedOp)} WLD locked in OP Mainnet's L1StandardBridge on Ethereum, so they are inside the Ethereum figure; World Chain's ${fmt(lockedWorld)} bridged WLD are locked the same way. The listed World wallets hold ${fmt(held.reduce((a, b) => a + b, 0))} WLD on Ethereum (World also lists wallets on Optimism and World Chain). Circulating is withheld: World defines circulating as tokens without transfer restrictions and its unlocked supply only as an upper bound (${WLD_WHITEPAPER}), and the team and investor tokens still unlocking have no published addresses, so total minus the listed wallets would overstate it.`,
+    };
+  },
+  // Aster (ASTER, BNB Chain). Total is a chain read: BEP-20 totalSupply minus the ASTER at 0x…dEaD, the same
+  // way Venice nets burns — the contract does not lower totalSupply on a burn transfer. Aster's own tokenomics
+  // (docs.asterdex.com/usdaster-token/tokenomics.md) burn from reserve until total supply reaches 3B.
+  // Circulating is withheld: that page says Treasury (560M) is fully locked and Team (400M) stays locked until
+  // 17 Sep 2027, and it does not publish those wallet addresses, so subtracting them would guess. Ecosystem
+  // vesting was replaced by staking emissions after January 2026; those are not treated as locked.
+  async aster(r = {}) {
+    const [supply, dead, zero] = await Promise.all([
+      erc20TotalSupply('bsc', ASTER),
+      erc20Balance('bsc', ASTER, BURN),
+      erc20Balance('bsc', ASTER, ZERO),
+    ]);
+    if (![supply, dead, zero].every(Number.isFinite) || !(supply > 0)) throw new Error(`aster: bad chain read (${supply}, ${dead}, ${zero})`);
+    if (!(dead > 0)) throw new Error('aster: no dead-address burn');
+    const burned = dead + zero;
+    const total = supply - burned;
+    if (!(total > 0) || burned >= supply) throw new Error(`aster: burned ${burned} is not below totalSupply ${supply}`);
+    const max = Number(r.max);
+    if (max > 0 && supply > max * 1.0001) throw new Error(`aster: totalSupply ${supply} above max ${max}`);
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    const holder = h => `${EXPLORER.bsc}/token/${ASTER}?a=${h}`;
+    return {
+      circulating: r.circulating === true ? total : null,
+      total,
+      src: `${EXPLORER.bsc}/token/${ASTER}`,
+      excluded: [
+        { reason: 'Burned (sent to the dead address; Aster burns toward 3B and does not lower totalSupply())', holder: BURN, amount: dead, src: holder(BURN) },
+        ...(zero > 0 ? [{ reason: 'Zero address (unspendable)', holder: ZERO, amount: zero, src: holder(ZERO) }] : []),
+      ],
+      note: `Total read from BNB Chain: totalSupply ${fmt(supply)} ASTER of the BEP-20 named in Aster's token overview (${ASTER_OVERVIEW}) minus ${fmt(burned)} ASTER at the burn address. Aster's tokenomics (${ASTER_DOCS}) burn from reserve until supply reaches 3B and do not decrement totalSupply() on those transfers. Circulating is withheld: that page says Treasury (560M, 7%) is fully locked and Team (400M, 5%) stays locked until 17 Sep 2027, without publishing those addresses, so subtracting them would guess. Ecosystem vesting was replaced by staking emissions after January 2026; those emissions are not treated as locked.`,
     };
   },
   // Celestia (TIA): total is a chain read (bank supply of utia). Circulating is NOT read from the chain:

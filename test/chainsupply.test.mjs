@@ -1471,3 +1471,71 @@ test('pump-fun: Solana RPC errors and NaN fail the read instead of guessing a su
     }));
   } finally { restore(); }
 });
+
+// Aster (ASTER): BEP-20 on BNB Chain. Captured 2026-11-26 from bsc-dataseed.bnbchain.org.
+const ASTER = '0x000ae314e2a2172a039b26378814c252734f556a';
+const ASTER_RPC = {
+  totalSupply: '0x000000000000000000000000000000000000000019d971e4fe8401e740000000', // 8,000,000,000
+  decimals: '0x0000000000000000000000000000000000000000000000000000000000000012',
+  balanceOfDead: '0x000000000000000000000000000000000000000000b2d13130c732b3d3e8e158', // 216,176,677.891617142837141848
+  balanceOfZero: '0x0000000000000000000000000000000000000000000000000000000000000000',
+};
+
+function fakeAster({ rpc = ASTER_RPC, rpcError, httpStatus } = {}) {
+  const calls = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    if (httpStatus) return { ok: false, status: httpStatus, json: async () => ({}) };
+    const u = String(url);
+    assert.ok(u.includes('bsc'), 'only the BSC RPC is called: ' + u);
+    const req = JSON.parse(opts.body);
+    const reply = result => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) });
+    if (rpcError) return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, error: { message: rpcError } }) };
+    assert.equal(req.method, 'eth_call');
+    assert.equal(req.params[0].to.toLowerCase(), ASTER);
+    const data = String(req.params[0].data).toLowerCase();
+    let result;
+    if (data === '0x18160ddd') result = rpc.totalSupply;
+    else if (data === '0x313ce567') result = rpc.decimals;
+    else if (data === '0x70a08231' + '0'.repeat(24) + '000000000000000000000000000000000000dead') result = rpc.balanceOfDead;
+    else if (data === '0x70a08231' + '0'.repeat(64)) result = rpc.balanceOfZero;
+    else throw new Error('unexpected call data ' + data);
+    calls.push(data.slice(0, 10));
+    return reply(result);
+  };
+  return calls;
+}
+
+test('aster: seed rule publishes totalSupply minus the dead-address burn and withholds circulating', async () => {
+  const { aster } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  assert.equal(aster.symbol, 'ASTER');
+  assert.equal(aster.supply.method, 'aster');
+  assert.equal(aster.supply.max, 8000000000);
+  const calls = fakeAster();
+  const s = await readSupply(aster.supply);
+  assert.ok(calls.includes('0x18160ddd'));
+  assert.equal(Math.round(s.total), 7783823322, '8,000,000,000 totalSupply - 216,176,677.89 at 0xdEaD');
+  assert.equal(s.circulating, null, 'circulating is withheld: treasury and team locks have no published addresses');
+  assert.equal(s.max, 8000000000);
+  assert.equal(s.excluded.length, 1);
+  assert.equal(s.excluded[0].holder.toLowerCase(), '0x000000000000000000000000000000000000dead');
+  assert.equal(Math.round(s.excluded[0].amount), 216176678);
+  assert.equal(s.src, 'https://bscscan.com/token/0x000Ae314E2A2172a039B26378814C252734f556A');
+  assert.match(s.note, /docs\.asterdex\.com\/usdaster-token\/tokenomics\.md/);
+  assert.match(s.note, /Treasury \(560M, 7%\) is fully locked/);
+  assert.match(s.note, /Team \(400M, 5%\) stays locked until 17 Sep 2027/);
+  assert.match(s.note, /Ecosystem vesting was replaced by staking emissions after January 2026/);
+  assert.doesNotMatch(s.note, /unvested ecosystem allocations/);
+  assert.equal(s.checked, true);
+  assert.equal(s.method, 'aster');
+});
+
+test('aster: missing burn, supply above max, or a broken RPC fail closed', async () => {
+  fakeAster({ rpc: { ...ASTER_RPC, balanceOfDead: '0x0' } });
+  await assert.rejects(readSupply({ method: 'aster', max: 8000000000 }), /no dead-address burn/);
+  fakeAster({ rpc: { ...ASTER_RPC, totalSupply: '0x' + (9000000000n * 10n ** 18n).toString(16) } });
+  await assert.rejects(readSupply({ method: 'aster', max: 8000000000 }), /above max/);
+  fakeAster({ rpcError: 'rate limited' });
+  await assert.rejects(readSupply({ method: 'aster' }), /rate limited/);
+  fakeAster({ httpStatus: 403 });
+  await assert.rejects(readSupply({ method: 'aster' }), /403/);
+});

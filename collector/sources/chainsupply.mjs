@@ -2,6 +2,7 @@
 // Each checked coin has a rule in coins.json: { supply: { method, ... } }. A rule may list wallets that are
 // not circulating (team, treasury, locked, burn) with a reason; their balances are read from the chain and
 // subtracted, and the coin page shows each one.
+import { createHash, createHmac } from 'node:crypto';
 import { getJSON } from '../../src/util.mjs';
 import { erc20TotalSupply, erc20Balance, splBalance, trc20Balance, sol, substrateValue, evm, EXPLORER } from '../chains.mjs';
 import { resetSupply, tnkSupply } from './trac.mjs';
@@ -1160,7 +1161,132 @@ const METHODS = {
       note: `Total read from Plasma mainnet (verified 10,000,000,000 XPL genesis stateRoot in ${PLASMA_GENESIS_SRC}, less ${fmt2(burned)} XPL burned at the zero and dead addresses; consensus withdrawals are empty and validator inflation is inactive until external stake delegation launches per ${PLASMA_DOCS_SRC}). The ${fmt(bscOftTotal)} bridged XPL on BNB Smart Chain (${EXPLORER.bsc}/token/${PLASMA_OFT}) are LayerZero OFT tokens backed by ${fmt(bridgeLocked)} XPL locked in Plasma's OFT adapter (${addrUrl(PLASMA_OFT)}), so they sit inside the mainnet total. The genesis and protocol Safes still hold ${fmt(safeHeld)} XPL on-chain. Circulating is withheld: Team (25%), Investors (25%) and Ecosystem & Growth (32% post-launch) unlock on schedule through 25 Sep 2028 (${PLASMA_DOCS_SRC}), XPL carries no protocol-level transfer lock (MiCA whitepaper G.11), and the Team and Investor genesis Safes moved their allocations to unpublished custody wallets, so subtracting only the genesis Safes would overstate circulating.`,
     };
   },
+  // Monad (MON, chain id 143). Native gas token on Monad mainnet; not an ERC-20, so there is no
+  // totalSupply(). Total = the Foundation's published 100B genesis
+  // (https://monad.xyz/blog/mon-tokenomics-overview) plus the block rewards minted by the staking
+  // precompile's syscallReward (selector 0x791bdcf3, verified by reading the reward mints to 0x1000
+  // on-chain), less cumulative burns.
+  // Emission is anchored to the blocks where rewards actually began, not to getEpoch activation:
+  // the first block carrying a reward mint is 37,304,999 (2025-11-22T18:00:48Z, hash 0xc60c2847...)
+  // paying 25 MON per block, and MIP-12 cut the reward to 18 MON at block 89,656,735
+  // (2026-07-23T14:35:12Z, hash 0x271a4508..., ~Round 89,758,000; https://mips.monad.xyz/MIPs/MIP-12,
+  // https://docs.monad.xyz/node-ops/upgrade-instructions/v0.15.1). Blocks before 37,304,999 mint
+  // nothing even though the staking precompile already answers getEpoch there.
+  // The base component of every transaction fee is burned (tokenomics overview, "Token Supply
+  // Changes"), so cumulative fee burns are read from MonadVision's chain accounting
+  // (https://monadvision.com, served at https://monad-api.blockvision.org), the explorer listed on
+  // https://docs.monad.xyz/developer-essentials/network-information); the provably unspendable
+  // zero/dead address balances are subtracted on top. If MonadVision cannot be read the supply
+  // read fails closed rather than silently ignoring fee burns.
+  // Team, investor, Category Labs treasury and ecosystem allocations are locked off-chain on
+  // schedules the Foundation publishes without labeled on-chain contracts, so circulating is
+  // withheld rather than guessed. Staked MON at 0x1000 belongs to delegators and is circulating.
+  async monad(r = {}) {
+    const genesis = Number(r.genesis ?? MONAD_GENESIS_SUPPLY);
+    const firstReward = Number(r.firstRewardBlock ?? MONAD_FIRST_REWARD_BLOCK);
+    const rewardCut = Number(r.rewardCutBlock ?? MONAD_REWARD_CUT_BLOCK);
+    const rewardEarly = Number(r.rewardPerBlockEarly ?? MONAD_REWARD_EARLY);
+    const rewardLate = Number(r.rewardPerBlock ?? MONAD_REWARD_LATE);
+    const cfg = [genesis, firstReward, rewardCut, rewardEarly, rewardLate];
+    if (!cfg.every(Number.isSafeInteger) || !(genesis > 0) || !(firstReward > 0) || !(rewardCut > firstReward) || !(rewardEarly > 0) || !(rewardLate > 0)) {
+      throw new Error('monad: invalid configuration');
+    }
+
+    const rpcUrl = r.rpc || MONAD_RPC;
+    const rpcCall = async (method, params = []) => {
+      const res = await getJSON(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      if (res?.error) throw new Error('monad rpc error: ' + (res.error.message || JSON.stringify(res.error)));
+      return res?.result;
+    };
+
+    const wei = hex => {
+      if (typeof hex !== 'string' || !/^0x[0-9a-f]+$/i.test(hex)) throw new Error('monad: bad balance hex ' + hex);
+      return Number(BigInt(hex) / 10n ** 12n) / 1e6;
+    };
+
+    const [chainIdHex, blockHex, epochRaw, zeroHex, deadHex, stakingHex, mv] = await Promise.all([
+      rpcCall('eth_chainId', []),
+      rpcCall('eth_blockNumber', []),
+      rpcCall('eth_call', [{ to: MONAD_STAKING_PRECOMPILE, data: '0x757991a8' }, 'latest']),
+      rpcCall('eth_getBalance', [ZERO, 'latest']),
+      rpcCall('eth_getBalance', [BURN, 'latest']),
+      rpcCall('eth_getBalance', [MONAD_STAKING_PRECOMPILE, 'latest']),
+      getJSON(`${MONAD_MV_API}/overview`, { headers: { ...monadMvAuth('/mainnet/api/overview'), 'user-agent': MONAD_MV_UA, origin: 'https://monadvision.com', referer: 'https://monadvision.com/' } }),
+    ]);
+
+    if (typeof chainIdHex !== 'string' || !/^0x[0-9a-f]+$/i.test(chainIdHex)) throw new Error('monad: bad chain id');
+    const chainId = Number(BigInt(chainIdHex));
+    if (chainId !== 143) throw new Error('monad: not mainnet chain id 143 (' + chainId + ')');
+
+    if (typeof blockHex !== 'string' || !/^0x[0-9a-f]+$/i.test(blockHex)) throw new Error('monad: bad block number');
+    const block = Number(BigInt(blockHex));
+    if (!Number.isSafeInteger(block) || block <= 0) throw new Error('monad: bad block number ' + block);
+
+    if (typeof epochRaw !== 'string' || !/^0x[0-9a-f]+$/i.test(epochRaw) || epochRaw.length < 66) {
+      throw new Error('monad: bad getEpoch response');
+    }
+    const epoch = Number(BigInt('0x' + epochRaw.slice(2, 66)));
+    if (!(epoch > 0)) throw new Error('monad: getEpoch returned 0');
+
+    const feeBurned = Number(mv?.result?.burnt);
+    if (!Number.isFinite(feeBurned) || feeBurned < 0) throw new Error('monad: bad MonadVision cumulative burn figure');
+
+    const zero = wei(zeroHex);
+    const dead = wei(deadHex);
+    const staked = wei(stakingHex);
+    if (![zero, dead, staked].every(v => Number.isFinite(v) && v >= 0)) throw new Error('monad: bad chain read');
+
+    const emitted = block < firstReward ? 0 :
+      rewardEarly * (Math.min(block, rewardCut - 1) - firstReward + 1) +
+      rewardLate * Math.max(0, block - rewardCut + 1);
+    const burned = feeBurned + zero + dead;
+    const total = genesis + emitted - burned;
+
+    if (!Number.isFinite(total) || !(total > 0) || !(total <= genesis + emitted)) throw new Error('monad: bad total ' + total);
+    if (!(staked < total)) throw new Error(`monad: staking contract holds ${staked} which is not below total ${total}`);
+
+    const scan = 'https://monadscan.com/address/';
+    const excluded = [
+      { reason: 'Zero address (unspendable)', holder: ZERO, amount: zero, src: scan + ZERO },
+      { reason: 'Burn address', holder: BURN, amount: dead, src: scan + BURN },
+    ].filter(e => e.amount > 0);
+
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    const publish = r.circulating !== false;
+    return {
+      circulating: publish ? total - zero - dead : null,
+      total,
+      src: 'https://docs.monad.xyz/monad-arch/consensus/staking',
+      excluded,
+      note: r.note || `Total is the Monad Foundation's 100 billion MON genesis plus block rewards minted since block ${firstReward.toLocaleString('en-US')} — ${rewardEarly} MON per block through block ${fmt(rewardCut - 1)} (MIP-12, https://mips.monad.xyz/MIPs/MIP-12) and ${rewardLate} MON per block from block ${rewardCut.toLocaleString('en-US')} — less ${fmt(feeBurned)} MON of cumulative base-fee burns per MonadVision (${MONAD_MV_API}/overview) and ${fmt(zero + dead)} MON at the zero and dead addresses. Staked MON (${fmt(staked)} MON at 0x1000) belongs to delegators and is circulating. Circulating supply is withheld per Foundation tokenomics disclosure: team, investor, Category Labs treasury and ecosystem allocations are locked off-chain without on-chain labeled contracts.`,
+    };
+  },
 };
+
+const MONAD_RPC = 'https://rpc.monad.xyz';
+const MONAD_GENESIS_SUPPLY = 100_000_000_000;
+const MONAD_FIRST_REWARD_BLOCK = 37_304_999; // first block with a syscallReward mint (25 MON), 2025-11-22T18:00:48Z
+const MONAD_REWARD_CUT_BLOCK = 89_656_735; // first 18 MON block, 2026-07-23T14:35:12Z (MIP-12)
+const MONAD_REWARD_EARLY = 25;
+const MONAD_REWARD_LATE = 18;
+const MONAD_STAKING_PRECOMPILE = '0x0000000000000000000000000000000000001000';
+const MONAD_MV_API = 'https://monad-api.blockvision.org/mainnet/api';
+const MONAD_MV_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
+// MonadVision's frontend signs each API call (the keys ship to every browser); replicate it so the
+// public chain-accounting endpoint answers server-side.
+function monadMvAuth(path) {
+  const ts = String(Math.floor(Date.now() / 1000));
+  const u = createHmac('sha256', '3YFvCZmdbxTk51Rp').update(`36657-${ts}`).digest('hex');
+  const appid = [...u].filter((_, i) => i % 2 === 1).join('');
+  const f = createHash('sha256').update(path + appid + ts).digest('hex');
+  let sig = '';
+  for (let i = 0; i < f.length; i += 2) sig += f[i + 1] + f[i];
+  return { 'x-api-timestamp': ts, 'x-app-id': appid, 'x-api-signature': sig };
+}
 
 const SEI_GRINGOTTS_INFO = Buffer.from('{"info":{}}').toString('base64');
 const seiFromUsei = u => Number(u / 1_000_000n) + Number(u % 1_000_000n) / 1e6;

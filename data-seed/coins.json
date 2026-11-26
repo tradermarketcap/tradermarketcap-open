@@ -250,5 +250,21 @@
   "worldcoin": {"symbol": "WLD", "name": "Worldcoin", "supply": {"method": "worldcoin"}},
   "blur": {"symbol": "BLUR", "name": "Blur", "supply": {"method": "tokens", "parts": [{"chain": "eth", "address": "0x5283D291DBCF85356A21bA090E6db59121208b44"}], "circulating": false, "max": 3000000000, "note": "Ethereum ERC-20 BLUR only (single chain, no multichain parts). Token identity and the 3,000,000,000 max are the two Etherscan pages that resolve: https://etherscan.io/token/0x5283D291DBCF85356A21bA090E6db59121208b44 is titled Blur (BLUR) and shows Max Total Supply 3,000,000,000 BLUR, and the verified source https://etherscan.io/address/0x5283D291DBCF85356A21bA090E6db59121208b44#code is contract BlurToken (ERC20 name Blur, symbol BLUR) with constant INITIAL_SUPPLY = 3_000_000_000, minted once in the constructor and with no later mint. That constant is max. Circulating is withheld: Blur publishes no addresses for the contracts holding the core-contributor, launch-partner, advisor and community-treasury allocations, so those balances cannot be subtracted from primary sources. The only provable non-circulating wallet is the burn address, which the rule reads and records as an exclusion. Publishing total-minus-burn as circulating would overstate it, so we publish the chain-read total and this sourced max, and withhold circulating (the SEI treatment from bounty #3)."}},
   "plasma": {"symbol": "XPL", "name": "Plasma", "supply": {"method": "plasma"}},
-  "aster": {"symbol": "ASTER", "name": "Aster", "links": {"site": "https://docs.asterdex.com/usdaster-token/overview.md", "contract": "https://bscscan.com/token/0x000Ae314E2A2172a039B26378814C252734f556A"}, "supply": {"method": "aster", "max": 8000000000, "note": "Total is BNB Chain totalSupply minus the dead-address burn. Circulating withheld: Treasury 560M locked and Team 400M locked until 17 Sep 2027 with no published addresses (docs.asterdex.com/usdaster-token/tokenomics.md)."}}
+  "aster": {"symbol": "ASTER", "name": "Aster", "links": {"site": "https://docs.asterdex.com/usdaster-token/overview.md", "contract": "https://bscscan.com/token/0x000Ae314E2A2172a039B26378814C252734f556A"}, "supply": {"method": "aster", "max": 8000000000, "note": "Total is BNB Chain totalSupply minus the dead-address burn. Circulating withheld: Treasury 560M locked and Team 400M locked until 17 Sep 2027 with no published addresses (docs.asterdex.com/usdaster-token/tokenomics.md)."}},
+  "monad": {
+    "symbol": "MON",
+    "name": "Monad",
+    "links": {
+      "website": "https://monad.xyz",
+      "whitepaper": "https://docs.monad.xyz",
+      "twitter": "https://x.com/monad_xyz",
+      "explorer": "https://monadvision.com"
+    },
+    "supply": {
+      "method": "monad",
+      "genesis": 100000000000,
+      "circulating": false,
+      "note": "Total is the Monad Foundation's 100 billion MON genesis (https://monad.xyz/blog/mon-tokenomics-overview) plus block rewards minted from block 37,304,999 — 25 MON per block through block 89,656,734 and 18 MON per block from block 89,656,735 per MIP-12 (https://mips.monad.xyz/MIPs/MIP-12) — less cumulative base-fee burns read from MonadVision chain accounting (https://monadvision.com) and the zero/dead address balances. Circulating is withheld: team, investor, Category Labs treasury and ecosystem allocations are locked off-chain on schedules the Foundation publishes without labeled on-chain contracts."
+    }
+  }
 }

@@ -2052,3 +2052,100 @@ test('ZRO: missing EID 33002 peer, 7-chain sum above 1B cap, NaN, or any chain R
   }
   assert.equal(globalThis.fetch, prev, 'globalThis.fetch is restored after test');
 });
+
+// ---------- Official Trump (Solana) ----------
+// Response shapes captured from api.mainnet-beta.solana.com on 2026-11-26.
+const TRUMP_FX = JSON.parse(readFileSync(new URL('./fixtures/trump.json', import.meta.url), 'utf8'));
+const TRUMP_MINT = '6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN';
+const TRUMP_MAGNA_OWNER = '2RH6rUTPBJ9rUDPpuV9b8z1YL56k1tYU6Uk5ZoaEFFSK';
+const TRUMP_MAGNA_PROGRAM = 'magnaSHyv8zzKJJmr8NSz5JXmtdGDTTFPEADmvNAwbj';
+
+function cloneTrumpFx() {
+  return JSON.parse(JSON.stringify(TRUMP_FX));
+}
+
+function fakeTrump({ fx, rpcError, httpStatus } = {}) {
+  const data = fx || cloneTrumpFx();
+  const calls = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    if (httpStatus) return { ok: false, status: httpStatus, json: async () => ({}) };
+    assert.ok(String(url).includes('solana'), 'only the Solana RPC is called: ' + url);
+    const req = JSON.parse(opts.body);
+    const reply = result => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) });
+    if (rpcError) return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, error: { message: rpcError } }) };
+    calls.push(req.method);
+    if (req.method === 'getTokenSupply') {
+      assert.equal(req.params[0], TRUMP_MINT);
+      return reply(data.getTokenSupply);
+    }
+    assert.equal(req.method, 'getMultipleAccounts');
+    return reply(data.getMultipleAccounts);
+  };
+  return calls;
+}
+
+test('trump: seed rule publishes mint total minus the Magna vesting vault', async () => {
+  const prev = globalThis.fetch;
+  try {
+    const { 'official-trump': coin } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+    assert.equal(coin.symbol, 'TRUMP');
+    assert.equal(coin.supply.method, 'trump');
+    assert.equal(coin.supply.max, 1000000000);
+    const calls = fakeTrump();
+    const s = await readSupply(coin.supply);
+    assert.ok(calls.includes('getTokenSupply'));
+    assert.ok(calls.includes('getMultipleAccounts'));
+    assert.equal(s.total, 999998751.509708);
+    assert.equal(s.excluded.length, 1);
+    assert.equal(s.excluded[0].holder, TRUMP_MAGNA_OWNER);
+    assert.equal(s.excluded[0].amount, 706131964.328498);
+    assert.equal(s.circulating, 999998751.509708 - 706131964.328498);
+    assert.ok(s.circulating < s.total);
+    assert.equal(s.max, 1000000000);
+    assert.equal(s.src, 'https://solscan.io/token/' + TRUMP_MINT);
+    assert.match(s.note, /gettrumpmemes\.com\/#tokenomics/);
+    assert.match(s.note, /Magna Token Vesting/);
+    assert.match(s.note, /80% Creators & CIC Digital/);
+    assert.match(s.note, /withdrawn from vesting sit in ordinary wallets/);
+    assert.doesNotMatch(s.note, /2JEPvv/);
+    assert.doesNotMatch(s.note, /5e2qRc/);
+    assert.equal(s.checked, true);
+    assert.equal(s.method, 'trump');
+  } finally { globalThis.fetch = prev; }
+});
+
+test('trump: wrong program, mint mismatch, empty vault, missing accounts, or a broken RPC fail closed', async () => {
+  const prev = globalThis.fetch;
+  try {
+    const badProgram = cloneTrumpFx();
+    badProgram.getMultipleAccounts.value[1].owner = '11111111111111111111111111111111';
+    fakeTrump({ fx: badProgram });
+    await assert.rejects(readSupply({ method: 'trump', max: 1000000000 }), /not owned by Magna/);
+
+    const badMint = cloneTrumpFx();
+    badMint.getMultipleAccounts.value[0].data.parsed.info.mint = 'So11111111111111111111111111111111111111112';
+    fakeTrump({ fx: badMint });
+    await assert.rejects(readSupply({ method: 'trump' }), /vault mint/);
+
+    const empty = cloneTrumpFx();
+    empty.getMultipleAccounts.value[0].data.parsed.info.tokenAmount.amount = '0';
+    fakeTrump({ fx: empty });
+    await assert.rejects(readSupply({ method: 'trump' }), /Magna vault is empty/);
+
+    const missing = cloneTrumpFx();
+    missing.getMultipleAccounts.value[1] = null;
+    fakeTrump({ fx: missing });
+    await assert.rejects(readSupply({ method: 'trump' }), /Magna vault accounts missing/);
+
+    const over = cloneTrumpFx();
+    over.getTokenSupply.value.amount = '1';
+    fakeTrump({ fx: over });
+    await assert.rejects(readSupply({ method: 'trump' }), /not below total/);
+
+    fakeTrump({ rpcError: 'rate limited' });
+    await assert.rejects(readSupply({ method: 'trump' }), /rate limited/);
+
+    fakeTrump({ httpStatus: 403 });
+    await assert.rejects(readSupply({ method: 'trump' }), /403/);
+  } finally { globalThis.fetch = prev; }
+});

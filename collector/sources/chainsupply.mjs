@@ -40,6 +40,22 @@ const ZERO = '0x0000000000000000000000000000000000000000';
 const ASTER = '0x000Ae314E2A2172a039B26378814C252734f556A';
 const ASTER_DOCS = 'https://docs.asterdex.com/usdaster-token/tokenomics.md';
 const ASTER_OVERVIEW = 'https://docs.asterdex.com/usdaster-token/overview.md';
+// Official Trump (TRUMP) on Solana. Mint named on gettrumpmemes.com. CIC Digital LLC and
+// Fight Fight Fight LLC own 80% of the cards on a 3-year unlock (gettrumpmemes.com/#tokenomics).
+// That remaining lockup sits in Magna Token Vesting (program magnaSHyv8zz…): SPL token account
+// HkykUVW… is owned by PDA 2RH6rUT…, and that PDA is owned by Magna. Tokens already withdrawn
+// from vesting are ordinary wallets and count as circulating.
+const TRUMP_MINT = '6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN';
+const TRUMP_MAGNA_VAULT = 'HkykUVWTctptXZmRTWearMsH4SaQNmE4Ku3tMJe5v2mH';
+const TRUMP_MAGNA_OWNER = '2RH6rUTPBJ9rUDPpuV9b8z1YL56k1tYU6Uk5ZoaEFFSK';
+const TRUMP_MAGNA_PROGRAM = 'magnaSHyv8zzKJJmr8NSz5JXmtdGDTTFPEADmvNAwbj';
+const TRUMP_TOKENOMICS = 'https://gettrumpmemes.com/#tokenomics';
+const TRUMP_SOLSCAN = 'https://solscan.io/token/' + TRUMP_MINT;
+const splUi = (amount, decimals) => {
+  const n = BigInt(amount);
+  const d = 10n ** BigInt(decimals);
+  return Number(n / d) + Number(n % d) / Number(d);
+};
 // WLD (Worldcoin): the ERC-20 on Ethereum holds the whole 10B supply. WLD on Optimism is an OptimismMintableERC20 whose
 // remoteToken() is the Ethereum WLD and whose bridge is OP's L2StandardBridge (0x4200...0010): every WLD there is
 // backed by WLD locked in OP Mainnet's L1StandardBridge on Ethereum, so it is checked, not added. World Chain's WLD is
@@ -573,6 +589,52 @@ const METHODS = {
         ...(zero > 0 ? [{ reason: 'Zero address (unspendable)', holder: ZERO, amount: zero, src: holder(ZERO) }] : []),
       ],
       note: `Total read from BNB Chain: totalSupply ${fmt(supply)} ASTER of the BEP-20 named in Aster's token overview (${ASTER_OVERVIEW}) minus ${fmt(burned)} ASTER at the burn address. Aster's tokenomics (${ASTER_DOCS}) burn from reserve until supply reaches 3B and do not decrement totalSupply() on those transfers. Circulating is withheld: that page says Treasury (560M, 7%) is fully locked and Team (400M, 5%) stays locked until 17 Sep 2027, without publishing those addresses, so subtracting them would guess. Ecosystem vesting was replaced by staking emissions after January 2026; those emissions are not treated as locked.`,
+    };
+  },
+  // Official Trump (TRUMP, Solana). Total is the live SPL mint supply. Circulating is that total
+  // minus the one on-chain lock: the Magna Token Vesting vault. The token account and its owner
+  // PDA are checked every pass (mint match, PDA owner-program is Magna). Ordinary wallets, even
+  // ones that received scheduled Magna withdrawals, are circulating.
+  async trump(r = {}) {
+    const mint = r.mint || TRUMP_MINT;
+    const [supply, accounts] = await Promise.all([
+      sol('getTokenSupply', [mint]),
+      sol('getMultipleAccounts', [[TRUMP_MAGNA_VAULT, TRUMP_MAGNA_OWNER], { encoding: 'jsonParsed' }]),
+    ]);
+    const sv = supply?.value;
+    if (!sv || sv.decimals !== 6 || typeof sv.amount !== 'string' || !/^\d+$/.test(sv.amount)) {
+      throw new Error(`trump: bad mint supply (${JSON.stringify(sv)})`);
+    }
+    const total = splUi(sv.amount, sv.decimals);
+    if (!(total > 0)) throw new Error(`trump: mint supply ${total} is not an amount`);
+    const max = Number(r.max) || 1_000_000_000;
+    if (total > max * 1.0001) throw new Error(`trump: mint supply ${total} above max ${max}`);
+    const vals = accounts?.value;
+    if (!Array.isArray(vals) || vals.length !== 2 || !vals[0] || !vals[1]) throw new Error('trump: Magna vault accounts missing');
+    const info = vals[0].data?.parsed?.info;
+    if (info?.mint !== mint) throw new Error(`trump: vault mint ${info?.mint} != ${mint}`);
+    if (info?.owner !== TRUMP_MAGNA_OWNER) throw new Error(`trump: vault token-account owner ${info?.owner} != ${TRUMP_MAGNA_OWNER}`);
+    const lockedRaw = info?.tokenAmount;
+    if (!lockedRaw || lockedRaw.decimals !== 6 || typeof lockedRaw.amount !== 'string' || !/^\d+$/.test(lockedRaw.amount)) {
+      throw new Error('trump: Magna vault balance is not an amount');
+    }
+    const locked = splUi(lockedRaw.amount, lockedRaw.decimals);
+    if (!(locked > 0)) throw new Error('trump: Magna vault is empty');
+    if (vals[1].owner !== TRUMP_MAGNA_PROGRAM) throw new Error(`trump: vault PDA is not owned by Magna (${vals[1].owner})`);
+    if (!(locked < total)) throw new Error(`trump: locked ${locked} not below total ${total}`);
+    const circulating = total - locked;
+    const fmt = v => v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    return {
+      circulating,
+      total,
+      src: TRUMP_SOLSCAN,
+      excluded: [{
+        reason: 'Creators & CIC Digital / Fight Fight Fight lockup in Magna Token Vesting (on-chain; withdrawn tokens count as circulating)',
+        holder: TRUMP_MAGNA_OWNER,
+        amount: locked,
+        src: `https://solscan.io/account/${TRUMP_MAGNA_OWNER}`,
+      }],
+      note: `Total is the live SPL mint supply of Official Trump (${TRUMP_SOLSCAN}). Circulating is that total minus the ${fmt(locked)} TRUMP in token account ${TRUMP_MAGNA_VAULT}, whose owner ${TRUMP_MAGNA_OWNER} is a PDA of Magna Token Vesting ${TRUMP_MAGNA_PROGRAM}. Tokens already withdrawn from vesting sit in ordinary wallets and count as circulating. ${TRUMP_TOKENOMICS}: 1B max, 200M at TGE, 80% Creators & CIC Digital / Fight Fight Fight unlocking over 36 months.`,
     };
   },
   // Celestia (TIA): total is a chain read (bank supply of utia). Circulating is NOT read from the chain:

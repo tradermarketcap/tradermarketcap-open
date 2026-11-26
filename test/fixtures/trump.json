@@ -1,0 +1,56 @@
+{
+ "note": "Real responses captured from api.mainnet-beta.solana.com on 2026-11-26. Official Trump mint 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN, Magna vault token account HkykUVWTctptXZmRTWearMsH4SaQNmE4Ku3tMJe5v2mH, vault PDA 2RH6rUTPBJ9rUDPpuV9b8z1YL56k1tYU6Uk5ZoaEFFSK.",
+ "getTokenSupply": {
+  "context": {
+   "apiVersion": "4.4.0",
+   "slot": 474276259
+  },
+  "value": {
+   "amount": "999998751509708",
+   "decimals": 6,
+   "uiAmount": 999998751.509708,
+   "uiAmountString": "999998751.509708"
+  }
+ },
+ "getMultipleAccounts": {
+  "value": [
+   {
+    "data": {
+     "parsed": {
+      "info": {
+       "isNative": false,
+       "mint": "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN",
+       "owner": "2RH6rUTPBJ9rUDPpuV9b8z1YL56k1tYU6Uk5ZoaEFFSK",
+       "state": "initialized",
+       "tokenAmount": {
+        "amount": "706131964328498",
+        "decimals": 6,
+        "uiAmount": 706131964.328498,
+        "uiAmountString": "706131964.328498"
+       }
+      },
+      "type": "account"
+     },
+     "program": "spl-token",
+     "space": 165
+    },
+    "executable": false,
+    "lamports": 8148901,
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "rentEpoch": 18446744073709551615,
+    "space": 165
+   },
+   {
+    "lamports": 6142274433,
+    "owner": "magnaSHyv8zzKJJmr8NSz5JXmtdGDTTFPEADmvNAwbj",
+    "executable": false,
+    "rentEpoch": 18446744073709551615,
+    "space": 6593,
+    "data": [
+     "",
+     "base64"
+    ]
+   }
+  ]
+ }
+}

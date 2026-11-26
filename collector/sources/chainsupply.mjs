@@ -149,6 +149,47 @@ async function tokenTotal(p) {
   return erc20TotalSupply(p.chain, p.address);
 }
 
+// Plasma (XPL) is the native token of its own chain, so no ERC-20 totalSupply exists and the public RPC exposes no
+// supply method (rpc.plasma.to answers "Method not found" to eth_getSupply, eth_totalSupply, and the like). Plasma
+// publishes its own supply feed instead: api.token.plasma.to/v1/supply, the endpoint CoinGecko cites for XPL. The
+// figure is not taken on trust: circulating is recomputed here from the unlock schedule in Plasma's own tokenomics
+// (docs.plasma.org/docs/get-started/xpl/tokenomics) at the feed's own lastUpdate date, and the read fails unless the
+// published number matches that schedule. Measured 2026-11-26 at the 2026-11-25 update: both give 4,988,888,888.8889.
+const PLASMA_SUPPLY = 'https://api.token.plasma.to/v1/supply';
+const PLASMA_DOCS = 'https://docs.plasma.org/docs/get-started/xpl/tokenomics';
+// Genesis allocation, from the tokenomics page: 10B at the 2025-09-25 mainnet beta launch, split into public sale
+// 1B, ecosystem and growth 4B (800M unlocked at launch, 3.2B monthly over 36 months), team 2.5B and investors 2.5B
+// (one third after a one-year cliff on 2026-09-25, the rest monthly over 24 months; all fully unlocked 2028-09-25).
+const PLASMA_GENESIS = 10_000_000_000;
+const PLASMA_LAUNCH = '2025-09-25';
+const PLASMA_US_SALE_UNLOCK = '2026-07-28';
+const PLASMA_CLIFF = '2026-09-25';
+const PLASMA_VEST_END = '2028-09-25';
+const PLASMA_SALE = 1_000_000_000;
+const PLASMA_ECO = 4_000_000_000;
+const PLASMA_ECO_AT_LAUNCH = 800_000_000;
+const PLASMA_TEAM = 2_500_000_000;
+const PLASMA_INVESTORS = 2_500_000_000;
+
+// Whole months from one YYYY-MM-DD to another, counted the way a monthly unlock schedule counts them.
+function plasmaMonths(start, end) {
+  const [sy, sm, sd] = start.split('-').map(Number);
+  const [ey, em, ed] = end.split('-').map(Number);
+  let m = (ey - sy) * 12 + (em - sm);
+  if (ed < sd) m -= 1;
+  return Math.max(0, m);
+}
+
+// Unlocked XPL on a given YYYY-MM-DD under the published schedule.
+function plasmaUnlockedOn(day) {
+  const sale = day >= PLASMA_US_SALE_UNLOCK ? PLASMA_SALE : 0;
+  const eco = PLASMA_ECO_AT_LAUNCH + (PLASMA_ECO - PLASMA_ECO_AT_LAUNCH) * Math.min(36, plasmaMonths(PLASMA_LAUNCH, day)) / 36;
+  let vestFrac = 0;
+  if (day >= PLASMA_VEST_END) vestFrac = 1;
+  else if (day >= PLASMA_CLIFF) vestFrac = 1 / 3 + (2 / 3) * Math.min(24, plasmaMonths(PLASMA_CLIFF, day)) / 24;
+  return { sale, eco, team: PLASMA_TEAM * vestFrac, investors: PLASMA_INVESTORS * vestFrac };
+}
+
 const METHODS = {
   // Read /thorchain/supply from THORNode through Liquify's public gateway. THORChain excludes
   // only the protocol reserve from circulation, so bonded RUNE and RUNE in liquidity pools count.
@@ -458,6 +499,40 @@ const METHODS = {
         { reason: 'Not circulating per Venice\'s published circulating supply. Venice does not list the wallets behind it; its fact sheet gives 35M of the 100M genesis supply to Venice.ai (team 10M streaming over 24 months, Community Incentive Fund 10M, Liquidity Fund 5M)', amount: total - circulating, src: VVV_STATS },
       ],
       note: `Total read from Base: totalSupply ${fmt(supply)} VVV minus ${fmt(burned)} VVV burned at the zero and dead addresses (Venice's burn stats agree: ${fmt(vBurned)}). Circulating is Venice's own figure from its stats API (${VVV_STATS}, the feed behind venice.ai/token); it does not subtract the ${fmt(staked)} VVV staked as a whole (it is above total minus staked). Venice also reports ${fmt(locked)} VVV locked to mint DIEM and does not say whether its figure counts them.`,
+    };
+  },
+  // Plasma (XPL): native token of the Plasma chain, so the supply comes from Plasma's own feed and the circulating
+  // figure is checked against the project's published unlock schedule before it is published.
+  async plasma() {
+    const d = await getJSON(PLASMA_SUPPLY);
+    const total = Number(d?.totalSupply);
+    const circulating = Number(d?.circulatingSupply);
+    const day = String(d?.lastUpdate || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(day))) throw new Error(`plasma: bad lastUpdate ${JSON.stringify(d?.lastUpdate)}`);
+    // The feed's own update date is the schedule date, so a stale or fabricated payload cannot pass the check.
+    if (!(total > 0) || !Number.isFinite(total)) throw new Error(`plasma: bad total supply ${JSON.stringify(d?.totalSupply)}`);
+    if (!(circulating > 0) || !Number.isFinite(circulating)) throw new Error(`plasma: bad circulating supply ${JSON.stringify(d?.circulatingSupply)}`);
+    if (circulating > total) throw new Error(`plasma: circulating ${circulating} above total ${total}`);
+    const unlocked = plasmaUnlockedOn(day);
+    const scheduled = unlocked.sale + unlocked.eco + unlocked.team + unlocked.investors;
+    // Both must agree: the published figure and the project's own schedule. A drift means one of them is wrong.
+    if (Math.abs(circulating - scheduled) > Math.max(1, circulating * 1e-6)) {
+      throw new Error(`plasma: published circulating ${circulating} disagrees with the unlock schedule ${scheduled} on ${day}`);
+    }
+    if (Math.abs(total - PLASMA_GENESIS) > Math.max(1, PLASMA_GENESIS * 1e-6)) {
+      throw new Error(`plasma: total ${total} has left the fixed genesis supply ${PLASMA_GENESIS} without a sourced emission rule`);
+    }
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    return {
+      circulating,
+      total,
+      src: PLASMA_DOCS,
+      excluded: [
+        { reason: `Team allocation still locked (one third unlocked at the 2026-09-25 cliff, the rest monthly to 2028-09-25)`, amount: PLASMA_TEAM - unlocked.team, src: PLASMA_DOCS },
+        { reason: `Investor allocation still locked (same schedule as team)`, amount: PLASMA_INVESTORS - unlocked.investors, src: PLASMA_DOCS },
+        { reason: `Ecosystem and Growth still locked (800M unlocked at launch, the remaining 3.2B monthly to 2028-09-25)`, amount: PLASMA_ECO - unlocked.eco, src: PLASMA_DOCS },
+      ],
+      note: `XPL is the native token of the Plasma chain (chain id 9745), so there is no ERC-20 totalSupply to read and the public RPC serves no supply method. Total and circulating come from Plasma's own supply feed (${PLASMA_SUPPLY}), updated ${day}. Circulating is not taken on trust: it is recomputed from the unlock schedule on Plasma's tokenomics page at that same date and must match it (${fmt(scheduled)} XPL), which leaves ${fmt(total - circulating)} XPL locked across team, investors and Ecosystem and Growth. Total is fixed at the 10B genesis supply; the feed reports no validator emissions yet, and the docs say inflation only starts when external validators and stake delegation go live, at which point this rule fails until an emission rule is added.`,
     };
   },
   // Worldcoin (WLD). Total is read from Ethereum: totalSupply of the WLD ERC-20 minus the dead-address balance.

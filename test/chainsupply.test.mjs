@@ -1471,3 +1471,69 @@ test('pump-fun: Solana RPC errors and NaN fail the read instead of guessing a su
     }));
   } finally { restore(); }
 });
+
+// Plasma (XPL): the supply feed response captured 2026-11-26 (test/fixtures/plasma.json), plus the schedule it is
+// checked against. No network in tests.
+const XPL_FX = JSON.parse(readFileSync(new URL('./fixtures/plasma.json', import.meta.url), 'utf8'));
+function fakePlasma({ supply = XPL_FX, status = 200 } = {}) {
+  const calls = [];
+  globalThis.fetch = async url => {
+    const u = String(url);
+    assert.equal(u, 'https://api.token.plasma.to/v1/supply', 'only Plasma\'s own supply feed is read');
+    calls.push(u);
+    return { ok: status === 200, status, json: async () => supply };
+  };
+  return calls;
+}
+
+test('plasma: total and circulating come from Plasma\'s feed and reconcile with its own unlock schedule', async () => {
+  const rule = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8')).plasma;
+  assert.equal(rule.symbol, 'XPL');
+  assert.equal(rule.supply.method, 'plasma');
+  const calls = fakePlasma();
+  const s = await readSupply(rule.supply);
+  assert.equal(calls.length, 1);
+  assert.equal(s.total, 10000000000);
+  assert.equal(s.circulating, 4988888888.8889);
+  // circulating is recomputed from the published schedule at the feed's own update date, and must match
+  assert.equal(Math.round(s.circulating), Math.round(1000000000 + 800000000 + 3200000000 * 14 / 36 + (2500000000 + 2500000000) * (1 / 3 + (2 / 3) * 2 / 24)));
+  assert.equal(s.src, 'https://docs.plasma.org/docs/get-started/xpl/tokenomics');
+  assert.equal(s.method, 'plasma');
+  assert.equal(s.checked, true);
+  assert.equal(s.excluded.length, 3);
+  // the locked allocations plus circulating account for the whole genesis supply
+  const locked = s.excluded.reduce((a, e) => a + e.amount, 0);
+  assert.ok(Math.abs(s.circulating + locked - s.total) < 1, 'circulating + locked == total');
+  for (const e of s.excluded) assert.equal(e.src, 'https://docs.plasma.org/docs/get-started/xpl/tokenomics');
+  assert.match(s.note, /native token of the Plasma chain/);
+  assert.match(s.note, /must match it \(4,988,888,889 XPL\)/);
+});
+
+test('plasma: a published circulating figure that does not match the unlock schedule fails the read', async () => {
+  // a published number 10% above the schedule: the feed and the docs disagree, so publish neither
+  fakePlasma({ supply: { ...XPL_FX, circulatingSupply: 4988888888.8889 * 1.1 } });
+  await assert.rejects(readSupply({ method: 'plasma' }), /disagrees with the unlock schedule/);
+});
+
+test('plasma: a total above the fixed genesis supply fails until an emission rule exists', async () => {
+  // 112.5 XPL of validator emissions would be a real change the docs describe but this rule cannot source
+  fakePlasma({ supply: { ...XPL_FX, totalSupply: 10100000000 } });
+  await assert.rejects(readSupply({ method: 'plasma' }), /left the fixed genesis supply/);
+});
+
+test('plasma: bad fields, missing lastUpdate, circulating above total and HTTP errors fail the read', async () => {
+  for (const bad of [
+    { ...XPL_FX, totalSupply: 0 },
+    { ...XPL_FX, totalSupply: 'NaN' },
+    { ...XPL_FX, circulatingSupply: 0 },
+    { ...XPL_FX, circulatingSupply: null },
+    { ...XPL_FX, lastUpdate: undefined },
+    { ...XPL_FX, lastUpdate: 'oops' },
+    { ...XPL_FX, circulatingSupply: 12000000000 },
+  ]) {
+    fakePlasma({ supply: bad });
+    await assert.rejects(readSupply({ method: 'plasma' }), /plasma:/, JSON.stringify(bad).slice(0, 60));
+  }
+  fakePlasma({ status: 503 });
+  await assert.rejects(readSupply({ method: 'plasma' }), /503/);
+});

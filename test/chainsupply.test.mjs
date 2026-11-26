@@ -2149,3 +2149,176 @@ test('trump: wrong program, mint mismatch, empty vault, missing accounts, or a b
     await assert.rejects(readSupply({ method: 'trump' }), /403/);
   } finally { globalThis.fetch = prev; }
 });
+
+// Monad (MON, chainId 143): 100B genesis + piecewise block rewards (25 MON at 37,304,999..89,656,734; 18 MON from
+// 89,656,735 under MIP-12) verified against head syscallReward, minus zero/dead balances. Captured 2026-11-27 from rpc.monad.xyz.
+const MONAD_CAPTURED = {
+  chainId: '0x8f',
+  genesis: {
+    number: '0x0',
+    hash: '0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9',
+    stateRoot: '0x0747b8d29af6f3072e50a986dc5035a59e8b9ce4df02846b7abf38630bd5b3c7',
+  },
+  head: {
+    number: '0x77e2d3b', // 125,709,627
+    hash: '0x84d3876c7a279c1e5a40543c3b2dbcedaa72edf5c7536ea2ada4e3380385de9a',
+    timestamp: '0x6b08c4a5',
+    transactions: [
+      {
+        hash: '0x5e08988fd237b991368b474a545d1be51ab57d2aa28b64c340022e78cf386714',
+        from: '0x6f49a8f621353f12378d0046e7d7e4b9b249dc9e',
+        to: '0x0000000000000000000000000000000000001000',
+        value: '0xf9ccd8a1c5080000', // 18 MON
+        input: '0x791bdcf300000000000000000000000053d3ac8bc0f5a264972a87367aeb432945862332',
+      },
+    ],
+  },
+  epoch: '0x00000000000000000000000000000000000000000000000000000000000009d30000000000000000000000000000000000000000000000000000000000000000',
+  balances: {
+    '0x0000000000000000000000000000000000000000': '0x1d3448ebccc54b296e52', // 137,913.1132135906 MON
+    '0x000000000000000000000000000000000000dead': '0x10f0024b15ddc975904', // 4,999.0779720911405 MON
+    '0x0000000000000000000000000000000000001000': '0x4905acdb1d42f141d883cf4c', // 22,599,266,635.03678 MON
+  },
+};
+
+function fakeMonad(over = {}) {
+  const snap = structuredClone(MONAD_CAPTURED);
+  if (over.chainId !== undefined) snap.chainId = over.chainId;
+  if (over.genesis) Object.assign(snap.genesis, over.genesis);
+  if (over.head) Object.assign(snap.head, over.head);
+  if (over.epoch !== undefined) snap.epoch = over.epoch;
+  if (over.balances) Object.assign(snap.balances, over.balances);
+  globalThis.fetch = async (url, opts = {}) => {
+    assert.equal(String(url), over.expectedRpc || 'https://rpc.monad.xyz');
+    if (over.httpStatus) return { ok: false, status: over.httpStatus, json: async () => ({}) };
+    const req = JSON.parse(opts.body);
+    if (over.rpcError) return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, error: { message: over.rpcError } }) };
+    const reply = result => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) });
+    if (req.method === 'eth_chainId') return reply(snap.chainId);
+    if (req.method === 'eth_getBlockByNumber') {
+      return reply(req.params[0] === '0x0' ? snap.genesis : snap.head);
+    }
+    if (req.method === 'eth_call') {
+      assert.equal(req.params[0].to.toLowerCase(), '0x0000000000000000000000000000000000001000');
+      assert.equal(req.params[0].data.toLowerCase(), '0x757991a8');
+      return reply(snap.epoch);
+    }
+    if (req.method === 'eth_getBalance') {
+      const addr = req.params[0].toLowerCase();
+      return reply(addr in snap.balances ? snap.balances[addr] : '0x0');
+    }
+    throw new Error('unexpected Monad RPC method ' + req.method);
+  };
+}
+
+test('MON: seed rule verifies genesis and head syscallReward, applies piecewise rewards, subtracts zero/dead burns, and withholds circulating', async () => {
+  const prev = globalThis.fetch;
+  try {
+    const { monad } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+    assert.equal(monad.symbol, 'MON');
+    assert.equal(monad.name, 'Monad');
+    assert.deepEqual(monad.supply, { method: 'monad' });
+    fakeMonad();
+    const s = await readSupply(monad.supply);
+    // 52,351,736 * 25 + 36,052,893 * 18 = 1,308,793,400 + 648,952,074 = 1,957,745,474 emitted MON
+    const expectedTotal = 100_000_000_000 + 1_957_745_474 - 137913.1132135906 - 4999.0779720911405;
+    assert.ok(Math.abs(s.total - expectedTotal) < 1e-3);
+    assert.equal(s.circulating, null, 'circulating is withheld while 50.6B locked + 38.5B Foundation allocations have no published addresses');
+    assert.equal(s.max, null);
+    assert.equal(s.checked, true);
+    assert.equal(s.method, 'monad');
+    assert.equal(s.src, 'https://monad.xyz/blog/mon-tokenomics-overview');
+    assert.deepEqual(s.parts, [{ chain: 'monad', amount: s.total, src: 'https://monadvision.com' }]);
+    assert.deepEqual(s.excluded.map(e => e.holder), [
+      '0x0000000000000000000000000000000000000000',
+      '0x000000000000000000000000000000000000dEaD',
+    ]);
+    assert.match(s.note, /plus 1,957,745,474 MON of block rewards \(25 MON\/block from block 37,304,999 through 89,656,734, then 18 MON\/block from block 89,656,735 under MIP-12/);
+    assert.match(s.note, /EIP-1559 base-fee burns .* are not subtracted/);
+    assert.match(s.note, /Circulating is withheld: 50\.6B MON/);
+
+    // Optional circulating:true mode subtracts configured exclude wallets cleanly.
+    const lockAddr = '0x1111111111111111111111111111111111111111';
+    fakeMonad({ balances: { [lockAddr]: '0x' + (5_000_000_000n * 10n ** 18n).toString(16) } });
+    const s2 = await readSupply({ method: 'monad', circulating: true, exclude: [{ holder: lockAddr, reason: 'Verified lock' }] });
+    assert.ok(Math.abs(s2.circulating - (s.total - 5_000_000_000)) < 1e-2);
+  } finally {
+    globalThis.fetch = prev;
+  }
+  assert.equal(globalThis.fetch, prev, 'globalThis.fetch is restored after test');
+});
+
+test('MON: piecewise reward boundaries match on-chain blocks 37,304,998 (0 MON), 37,304,999 (25 MON), 89,656,734 (25 MON), and 89,656,735 (18 MON)', async () => {
+  const prev = globalThis.fetch;
+  try {
+    const mkHead = (num, rewardMon) => ({
+      number: '0x' + num.toString(16),
+      transactions: [{
+        to: '0x0000000000000000000000000000000000001000',
+        value: '0x' + (BigInt(rewardMon) * 10n ** 18n).toString(16),
+        input: '0x791bdcf3' + '0'.repeat(64),
+      }],
+    });
+    const zeroBurns = {
+      '0x0000000000000000000000000000000000000000': '0x0',
+      '0x000000000000000000000000000000000000dead': '0x0',
+    };
+
+    fakeMonad({ head: mkHead(37_304_998, 0), balances: zeroBurns });
+    assert.equal((await readSupply({ method: 'monad' })).total, 100_000_000_000);
+
+    fakeMonad({ head: mkHead(37_304_999, 25), balances: zeroBurns });
+    assert.equal((await readSupply({ method: 'monad' })).total, 100_000_000_025);
+
+    fakeMonad({ head: mkHead(89_656_734, 25), balances: zeroBurns });
+    assert.equal((await readSupply({ method: 'monad' })).total, 101_308_793_400);
+
+    fakeMonad({ head: mkHead(89_656_735, 18), balances: zeroBurns });
+    assert.equal((await readSupply({ method: 'monad' })).total, 101_308_793_418);
+  } finally {
+    globalThis.fetch = prev;
+  }
+  assert.equal(globalThis.fetch, prev, 'globalThis.fetch is restored after test');
+});
+
+test('MON: wrong chainId, bad genesis, drifted syscallReward, invalid epoch, staking >= total, NaN, or RPC/HTTP failure fails closed', async () => {
+  const prev = globalThis.fetch;
+  try {
+    fakeMonad({ chainId: '0x1' });
+    await assert.rejects(readSupply({ method: 'monad' }), /unexpected chainId/);
+
+    fakeMonad({ genesis: { stateRoot: '0x' + '22'.repeat(32) } });
+    await assert.rejects(readSupply({ method: 'monad' }), /unexpected genesis/);
+
+    fakeMonad({ epoch: '0x' + '0'.repeat(64) });
+    await assert.rejects(readSupply({ method: 'monad' }), /invalid staking epoch/);
+
+    // Future MIP reward change (e.g. 15 MON/block) fails closed instead of drifting.
+    fakeMonad({
+      head: {
+        number: '0x77e2d3b',
+        transactions: [{
+          to: '0x0000000000000000000000000000000000001000',
+          value: '0x' + (15n * 10n ** 18n).toString(16),
+          input: '0x791bdcf3' + '0'.repeat(64),
+        }],
+      },
+    });
+    await assert.rejects(readSupply({ method: 'monad' }), /syscallReward does not match expected 18 MON/);
+
+    fakeMonad({ balances: { '0x0000000000000000000000000000000000001000': '0x' + (150_000_000_000n * 10n ** 18n).toString(16) } });
+    await assert.rejects(readSupply({ method: 'monad' }), /staking precompile balance .* outside/);
+
+    fakeMonad({ balances: { '0x0000000000000000000000000000000000000000': 'NaN' } });
+    await assert.rejects(readSupply({ method: 'monad' }), /bad zero balance/);
+
+    fakeMonad({ rpcError: 'upstream timeout' });
+    await assert.rejects(readSupply({ method: 'monad' }), /monad rpc: upstream timeout/);
+
+    fakeMonad({ httpStatus: 503 });
+    await assert.rejects(readSupply({ method: 'monad' }), /503/);
+  } finally {
+    globalThis.fetch = prev;
+  }
+  assert.equal(globalThis.fetch, prev, 'globalThis.fetch is restored after test');
+});

@@ -119,6 +119,28 @@ const ZRO_WALLETS = [
   ['0x6ac55e733dff03a54251670df0667774e8f7d28f', 'LayerZero Foundation Stargate-revenue ZRO buyback multisig', ZRO_BUYBACKS_SRC],
 ];
 
+// Monad (MON, chainId 143). Monad's tokenomics blog (monad.xyz/blog/mon-tokenomics-overview) sets the initial
+// mainnet supply at 100,000,000,000 MON. On-chain syscallReward(address) (0x791bdcf3) system transactions to the
+// staking precompile (0x0000...1000) paid 0 MON through block 37,304,998, began minting 25 MON/block at block
+// 37,304,999 (2025-11-22T18:00:48Z, hash 0xc60c2847...), and dropped to 18 MON/block at block 89,656,735
+// (2026-07-23T14:35:12Z, hash 0x271a4508...) under MIP-12 (mips.monad.xyz/MIPs/MIP-12). Every pass checks chainId,
+// the mainnet genesis hash/stateRoot, getEpoch() on 0x1000, and the head block's live syscallReward tx value so any
+// future block-reward change fails closed instead of drifting.
+const MONAD_RPC = 'https://rpc.monad.xyz';
+const MONAD_EXPLORER = 'https://monadvision.com';
+const MONAD_CHAIN_ID = 143;
+const MONAD_GENESIS_MON = 100_000_000_000n;
+const MONAD_GENESIS_HASH = '0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9';
+const MONAD_GENESIS_STATE = '0x0747b8d29af6f3072e50a986dc5035a59e8b9ce4df02846b7abf38630bd5b3c7';
+const MONAD_REWARD_START_BLOCK = 37_304_999; // first non-zero syscallReward (25 MON/block)
+const MONAD_MIP12_BLOCK = 89_656_735; // MIP-12 hard fork: 25 -> 18 MON/block
+const MONAD_STAKING = '0x0000000000000000000000000000000000001000';
+const MONAD_SYSCALL_REWARD = '0x791bdcf3'; // syscallReward(address)
+const MONAD_GET_EPOCH = '0x757991a8'; // getEpoch()
+const MONAD_TOKENOMICS_SRC = 'https://monad.xyz/blog/mon-tokenomics-overview';
+const MONAD_STAKING_DOCS_SRC = 'https://docs.monad.xyz/monad-arch/consensus/staking';
+const MONAD_MIP12_SRC = 'https://mips.monad.xyz/MIPs/MIP-12';
+
 // TAP (TAP Protocol on Bitcoin, by Trac). Trac's public TAP Protocol reader: the REST reader Trac's own Digital Matter
 // World kit reads on mainnet. Trac's older socket endpoint, tap.trac.network, now answers 502. A second reader (any
 // Trac tap-reader REST endpoint) can be added with TMC_TAP_READER2, and then has to agree. See the tap method below.
@@ -1412,6 +1434,127 @@ const METHODS = {
       parts,
       excluded: [...burnList, ...stuckList, ...walletList, ...extraList],
       note: `Total read across all 7 public EVM OFT deployments (${fmt(rawTotal)} ZRO, less ${fmt2(burned)} ZRO at burn addresses). LayerZeroToken (${EXPLORER.eth}/address/${ZRO}#code) minted the fixed 1,000,000,000 ZRO cap once in its Ethereum constructor with no mint() or burn() function, and protocol fee-switch referendums #1-#4 all voted Off (${ZRO_FEE_SWITCH_SRC}). Scanning peers(eid) across EIDs 1..40499 confirms that the remaining ${fmt(bridgedOut)} ZRO left the 7 EVM OFTs via OFT._debit to the 8th active OFT peer EID 33002 (zerointerop, LayerZero's native-ZRO Zero L1 bound on 2026-11-21 to peer 0x1ced7d571059a30db0fc9adc40346d2a1ce55b31 and listed in https://metadata.layerzero-api.com/v1/metadata with no public RPC yet, plus minor in-flight OFT messages). Excluded balances read live: ${fmt(nonBurnHeld)} ZRO across tokens parked at the OFT contracts themselves, the labeled LayerZero 1 wallet (0x1f90...3909), and the Foundation Stargate-revenue buyback multisig (${ZRO_BUYBACKS_SRC}). Circulating is withheld: per LayerZero's tokenomics (${ZRO_TOKENOMICS_SRC}), Strategic Partners (32.2%, 322M ZRO) and Core Contributors (25.5%, 255M ZRO) vest over 3 years (1-year lock then 24 monthly unlocks through 20 Jun 2027) alongside Foundation Ecosystem & Growth (14.5%, 145M ZRO), while other large Ethereum holders (GnosisSafeProxy 0x744D...DA24 and 0x806f...8431, BitGo WalletSimple contracts 0x6e0e...2427 / 0x637c...F7BF / 0xC2f3...D412, and EOA 0x7be1...7CFD) carry no public treasury or vesting label, so subtracting only the labeled wallets would overstate circulating.`,
+    };
+  },
+  // Monad (MON): native chain supply on chainId 143 from the 100B genesis plus piecewise block rewards anchored to
+  // the exact blocks where syscallReward (0x791bdcf3) mints began (25 MON/block from block 37,304,999 through
+  // 89,656,734; 18 MON/block from block 89,656,735 under MIP-12), verified live against the head block's
+  // syscallReward system tx value, minus native MON at the zero and dead addresses. EIP-1559 base-fee burns
+  // (~0.07% of supply) have no unauthenticated public chain counter and are noted rather than guessed. Circulating
+  // is withheld because the 50.6B locked team, investor and Category Labs treasury allocations (plus Foundation
+  // Ecosystem Development) sit in unlabelled addresses.
+  async monad(r = {}) {
+    const url = r.rpc || process.env.TMC_RPC_MONAD || MONAD_RPC;
+    const explorer = (r.explorer || MONAD_EXPLORER).replace(/\/+$/, '');
+    const rpc = async (method, params = []) => {
+      const j = await getJSON(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      if (j?.error) throw new Error(`monad rpc: ${j.error.message || JSON.stringify(j.error)}`);
+      return j?.result;
+    };
+    const weiOf = (hex, what) => {
+      if (typeof hex !== 'string' || !/^0x[0-9a-f]+$/i.test(hex)) throw new Error(`monad: bad ${what} (${hex})`);
+      return BigInt(hex);
+    };
+    const monOf = w => Number(w / 10n ** 18n) + Number(w % 10n ** 18n) / 1e18;
+    const pool2 = async tasks => {
+      const out = new Array(tasks.length);
+      let k = 0;
+      await Promise.all([0, 1].map(async () => {
+        while (k < tasks.length) { const i = k++; out[i] = await tasks[i](); }
+      }));
+      return out;
+    };
+    const extraCfg = r.exclude || [];
+    const [chainHex, genesis, head, epochHex, zeroHex, deadHex, stakeHex, ...extraHex] = await pool2([
+      () => rpc('eth_chainId'),
+      () => rpc('eth_getBlockByNumber', ['0x0', false]),
+      () => rpc('eth_getBlockByNumber', ['latest', true]),
+      () => rpc('eth_call', [{ to: MONAD_STAKING, data: MONAD_GET_EPOCH }, 'latest']),
+      () => rpc('eth_getBalance', [ZERO, 'latest']),
+      () => rpc('eth_getBalance', [BURN, 'latest']),
+      () => rpc('eth_getBalance', [MONAD_STAKING, 'latest']),
+      ...extraCfg.map(e => () => rpc('eth_getBalance', [e.holder, 'latest'])),
+    ]);
+    if (Number(weiOf(chainHex, 'chainId')) !== MONAD_CHAIN_ID) {
+      throw new Error(`monad: unexpected chainId ${chainHex}`);
+    }
+    if (String(genesis?.hash).toLowerCase() !== MONAD_GENESIS_HASH || String(genesis?.stateRoot).toLowerCase() !== MONAD_GENESIS_STATE) {
+      throw new Error('monad: unexpected genesis block or stateRoot');
+    }
+    if (typeof epochHex !== 'string' || !/^0x[0-9a-f]{64,}$/i.test(epochHex) || BigInt('0x' + epochHex.slice(2, 66)) <= 0n) {
+      throw new Error(`monad: invalid staking epoch ${epochHex}`);
+    }
+    const blockNum = Number(weiOf(head?.number, 'head block number'));
+    if (!Number.isSafeInteger(blockNum) || !(blockNum > 0) || !Array.isArray(head?.transactions)) {
+      throw new Error('monad: bad head block');
+    }
+    const rewardTxs = head.transactions.filter(tx =>
+      String(tx?.to).toLowerCase() === MONAD_STAKING &&
+      String(tx?.input).toLowerCase().startsWith(MONAD_SYSCALL_REWARD)
+    );
+    const expectedRewardMon = blockNum < MONAD_REWARD_START_BLOCK ? 0n : blockNum < MONAD_MIP12_BLOCK ? 25n : 18n;
+    if (expectedRewardMon === 0n) {
+      if (rewardTxs.some(tx => weiOf(tx.value, 'syscallReward value') !== 0n)) {
+        throw new Error(`monad: unexpected non-zero syscallReward before block ${MONAD_REWARD_START_BLOCK}`);
+      }
+    } else {
+      if (rewardTxs.length !== 1 || weiOf(rewardTxs[0].value, 'syscallReward value') !== expectedRewardMon * 10n ** 18n) {
+        throw new Error(`monad: head block ${blockNum} syscallReward does not match expected ${expectedRewardMon} MON`);
+      }
+    }
+    let emittedMon = 0n;
+    if (blockNum >= MONAD_REWARD_START_BLOCK) {
+      const end25 = Math.min(blockNum, MONAD_MIP12_BLOCK - 1);
+      emittedMon += BigInt(end25 - MONAD_REWARD_START_BLOCK + 1) * 25n;
+    }
+    if (blockNum >= MONAD_MIP12_BLOCK) {
+      emittedMon += BigInt(blockNum - MONAD_MIP12_BLOCK + 1) * 18n;
+    }
+    const zeroWei = weiOf(zeroHex, 'zero balance');
+    const deadWei = weiOf(deadHex, 'dead balance');
+    const stakeWei = weiOf(stakeHex, 'staking balance');
+    const extraWeis = extraHex.map((h, i) => weiOf(h, `exclude balance ${extraCfg[i].holder}`));
+    const mintedWei = (MONAD_GENESIS_MON + emittedMon) * 10n ** 18n;
+    const burnedWei = zeroWei + deadWei;
+    if (burnedWei >= mintedWei) throw new Error('monad: burned balance exceeds minted supply');
+    const totalWei = mintedWei - burnedWei;
+    if (!(stakeWei > 0n && stakeWei < totalWei)) {
+      throw new Error(`monad: staking precompile balance ${stakeWei} outside 0..${totalWei}`);
+    }
+    const total = monOf(totalWei);
+    const burned = monOf(burnedWei);
+    const staked = monOf(stakeWei);
+    const emitted = Number(emittedMon);
+    if (![total, burned, staked, emitted].every(Number.isFinite) || !(total >= 9.9e10)) {
+      throw new Error('monad: bad computed supply ' + total);
+    }
+    const addrUrl = h => `${explorer}/address/${h}`;
+    const excluded = [
+      ...(zeroWei > 0n ? [{ reason: 'Zero address (unspendable)', holder: ZERO, amount: monOf(zeroWei), src: addrUrl(ZERO) }] : []),
+      ...(deadWei > 0n ? [{ reason: 'Burn address', holder: BURN, amount: monOf(deadWei), src: addrUrl(BURN) }] : []),
+      ...extraCfg.map((e, i) => ({
+        reason: e.reason,
+        holder: e.holder,
+        amount: monOf(extraWeis[i]),
+        src: e.src || addrUrl(e.holder),
+      })).filter(e => e.amount > 0),
+    ];
+    const extraWeiSum = extraWeis.reduce((a, b) => a + b, 0n);
+    if (extraWeiSum >= totalWei) throw new Error('monad: excluded balances exceed total');
+    const ceiling = monOf(totalWei - extraWeiSum);
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    const fmt2 = v => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return {
+      circulating: r.circulating === true ? ceiling : null,
+      total,
+      src: MONAD_TOKENOMICS_SRC,
+      parts: [{ chain: 'monad', amount: total, src: explorer }],
+      excluded,
+      note: `Total read from Monad mainnet (${url}, verified chainId 143 and genesis stateRoot) at block ${blockNum.toLocaleString('en-US')}: 100,000,000,000 MON genesis (${MONAD_TOKENOMICS_SRC}) plus ${fmt(emitted)} MON of block rewards (25 MON/block from block 37,304,999 through 89,656,734, then 18 MON/block from block 89,656,735 under MIP-12, ${MONAD_MIP12_SRC} and ${MONAD_STAKING_DOCS_SRC}; live syscallReward verified on the head block) less ${fmt2(burned)} MON at the zero and dead addresses. EIP-1559 base-fee burns (~0.07% of supply) have no unauthenticated public RPC counter and are not subtracted. The ${fmt(staked)} MON delegated at staking precompile ${MONAD_STAKING} belong to delegators and stay in total. Circulating is withheld: 50.6B MON (50.6%: Team 27.0%, Investors 19.7%, Category Labs Treasury 3.95%) unlock on schedule through Q4 2029 and 38.5B MON (38.5%) are stewarded by the Monad Foundation for Ecosystem Development (${MONAD_TOKENOMICS_SRC}), with no published on-chain lock or treasury address list.`,
     };
   },
 };

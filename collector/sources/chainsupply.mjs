@@ -83,6 +83,26 @@ const PLASMA_PROTOCOL_SAFES = [
   ['0x000000000000000000000000000000000a11b005', 'Protocol validator fee-recipient Safe'],
 ];
 
+// LayerZero (ZRO). LayerZeroToken (0x6985...71cd) is a 13-line LayerZero v2 OFT that minted the fixed
+// 1,000,000,000 ZRO cap once in its Ethereum constructor, with no mint() or burn() function; protocol
+// fee-switch referendums #1-#4 all voted Off (layerzero.foundation/fee-switch). Each EVM OFT's totalSupply()
+// decreases only on OFT._debit (bridging out) and increases on OFT._credit (bridging in). Scanning peers(eid)
+// across EIDs 1..40499 (matching metadata.layerzero-api.com) finds 8 active chains: the 7 public EVM OFT
+// deployments below plus EID 33002 (zerointerop, LayerZero's native-ZRO Zero L1 bound on 2026-11-21 to peer
+// 0x1ced...55b31, which has no public RPC yet).
+const ZRO = '0x6985884C4392D348587B19cb9eAAf157F13271cd';
+const ZRO_CAP = 1_000_000_000;
+const ZRO_CHAINS = ['eth', 'arbitrum', 'bsc', 'base', 'optimism', 'polygon', 'avax'];
+const ZRO_ZERO_EID_CALL = '0xbb0b6a5300000000000000000000000000000000000000000000000000000000000080ea'; // peers(33002)
+const ZRO_ZERO_PEER = '0x0000000000000000000000001ced7d571059a30db0fc9adc40346d2a1ce55b31';
+const ZRO_TOKENOMICS_SRC = 'https://info.layerzero.foundation/introducing-zro-d39df554a9b7';
+const ZRO_BUYBACKS_SRC = 'https://layerzero.foundation/zro-buybacks';
+const ZRO_FEE_SWITCH_SRC = 'https://layerzero.foundation/fee-switch';
+const ZRO_WALLETS = [
+  ['0x1f903473376fBe98cc763F1Bc459C8fdB6AC3909', 'LayerZero 1 (labeled project wallet on Ethereum)', null],
+  ['0x6ac55e733dff03a54251670df0667774e8f7d28f', 'LayerZero Foundation Stargate-revenue ZRO buyback multisig', ZRO_BUYBACKS_SRC],
+];
+
 // TAP (TAP Protocol on Bitcoin, by Trac). Trac's public TAP Protocol reader: the REST reader Trac's own Digital Matter
 // World kit reads on mainnet. Trac's older socket endpoint, tap.trac.network, now answers 502. A second reader (any
 // Trac tap-reader REST endpoint) can be added with TMC_TAP_READER2, and then has to agree. See the tap method below.
@@ -1158,6 +1178,88 @@ const METHODS = {
       parts: [{ chain: 'plasma', amount: total, src: EXPLORER.plasma }],
       excluded,
       note: `Total read from Plasma mainnet (verified 10,000,000,000 XPL genesis stateRoot in ${PLASMA_GENESIS_SRC}, less ${fmt2(burned)} XPL burned at the zero and dead addresses; consensus withdrawals are empty and validator inflation is inactive until external stake delegation launches per ${PLASMA_DOCS_SRC}). The ${fmt(bscOftTotal)} bridged XPL on BNB Smart Chain (${EXPLORER.bsc}/token/${PLASMA_OFT}) are LayerZero OFT tokens backed by ${fmt(bridgeLocked)} XPL locked in Plasma's OFT adapter (${addrUrl(PLASMA_OFT)}), so they sit inside the mainnet total. The genesis and protocol Safes still hold ${fmt(safeHeld)} XPL on-chain. Circulating is withheld: Team (25%), Investors (25%) and Ecosystem & Growth (32% post-launch) unlock on schedule through 25 Sep 2028 (${PLASMA_DOCS_SRC}), XPL carries no protocol-level transfer lock (MiCA whitepaper G.11), and the Team and Investor genesis Safes moved their allocations to unpublished custody wallets, so subtracting only the genesis Safes would overstate circulating.`,
+    };
+  },
+  // LayerZero (ZRO): total is read across all 7 public EVM OFT deployments (eth, arbitrum, bsc, base, optimism,
+  // polygon, avax), net of zero/dead-address burns. LayerZeroToken (0x6985...71cd) minted the fixed 1B cap once
+  // at Ethereum deploy with no mint() or burn() function, and fee-switch referendums #1-#4 all voted Off; the gap
+  // between 1,000,000,000 and the 7-chain totalSupply sum was bridged out via OFT._debit to EID 33002 (zerointerop,
+  // LayerZero's native-ZRO Zero L1 verified via peers(33002) on Ethereum, which has no public RPC yet, plus minor
+  // in-flight OFT messages). Labeled and Foundation-disclosed holdings (LayerZero 1, the Foundation Stargate-revenue
+  // buyback multisig, and tokens stuck at the OFT contracts themselves) are read live into excluded, while
+  // circulating stays withheld because Strategic Partners (32.2%) and Core Contributors (25.5%) vest monthly through
+  // 20 Jun 2027 in unlabelled Safes, BitGo WalletSimple contracts and EOAs.
+  async layerzero(r = {}) {
+    const parts = [];
+    const burnList = [];
+    const stuckList = [];
+    let rawTotal = 0;
+    for (const chain of ZRO_CHAINS) {
+      const supply = await erc20TotalSupply(chain, ZRO);
+      const [zero, dead] = await Promise.all([
+        erc20Balance(chain, ZRO, ZERO),
+        erc20Balance(chain, ZRO, BURN),
+      ]);
+      const atSelf = await erc20Balance(chain, ZRO, ZRO);
+      if (![supply, zero, dead, atSelf].every(v => Number.isFinite(v) && v >= 0) || !(supply > 0)) {
+        throw new Error(`layerzero: bad ${chain} chain read`);
+      }
+      if (zero + dead + atSelf >= supply) {
+        throw new Error(`layerzero: ${chain} unspendable ZRO exceeds supply`);
+      }
+      rawTotal += supply;
+      const p = { chain, address: ZRO };
+      parts.push({ chain, amount: supply, src: tokenLink(p) });
+      if (zero > 0) burnList.push({ reason: `Zero address on ${chain} (unspendable)`, holder: ZERO, amount: zero, src: holderLink(p, ZERO) });
+      if (dead > 0) burnList.push({ reason: `Burn address on ${chain}`, holder: BURN, amount: dead, src: holderLink(p, BURN) });
+      if (atSelf > 0) stuckList.push({ reason: `Parked at the ZRO OFT contract on ${chain} (no rescue function)`, holder: ZRO, amount: atSelf, src: holderLink(p, ZRO) });
+    }
+    const zeroPeer = await evm('eth', 'eth_call', [{ to: ZRO, data: ZRO_ZERO_EID_CALL }, 'latest']);
+    if (typeof zeroPeer !== 'string' || zeroPeer.toLowerCase() !== ZRO_ZERO_PEER) {
+      throw new Error(`layerzero: unexpected Ethereum peers(33002) ${zeroPeer}`);
+    }
+    const walletBals = [];
+    for (const [h] of ZRO_WALLETS) walletBals.push(await erc20Balance('eth', ZRO, h));
+    const extraCfg = r.exclude || [];
+    const extraBals = [];
+    for (const e of extraCfg) extraBals.push(await erc20Balance(e.chain || 'eth', ZRO, e.holder));
+    if (![...walletBals, ...extraBals].every(v => Number.isFinite(v) && v >= 0)) {
+      throw new Error('layerzero: bad wallet balance');
+    }
+    const max = Number(r.max || ZRO_CAP);
+    if (!(rawTotal > 1e8) || rawTotal > max * 1.0001) {
+      throw new Error(`layerzero: 7-chain OFT supply ${rawTotal} outside 1e8..${max}`);
+    }
+    const burned = burnList.reduce((s, e) => s + e.amount, 0);
+    const total = rawTotal - burned;
+    const bridgedOut = Math.max(0, ZRO_CAP - rawTotal);
+    const ethToken = { chain: 'eth', address: ZRO };
+    const walletList = ZRO_WALLETS.map(([h, reason, src], i) => ({
+      reason,
+      holder: h,
+      amount: walletBals[i],
+      src: src || holderLink(ethToken, h),
+    })).filter(e => e.amount > 0);
+    const extraList = extraCfg.map((e, i) => ({
+      reason: e.reason,
+      holder: e.holder,
+      amount: extraBals[i],
+      src: e.src || holderLink({ chain: e.chain || 'eth', address: ZRO }, e.holder),
+    })).filter(e => e.amount > 0);
+    const nonBurnHeld = stuckList.reduce((s, e) => s + e.amount, 0)
+      + walletList.reduce((s, e) => s + e.amount, 0)
+      + extraList.reduce((s, e) => s + e.amount, 0);
+    const ceiling = total - nonBurnHeld;
+    if (!(ceiling > 0 && ceiling <= total)) throw new Error('layerzero: bad supply ceiling ' + ceiling);
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    const fmt2 = v => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return {
+      circulating: r.circulating === true ? ceiling : null,
+      total,
+      src: `${EXPLORER.eth}/token/${ZRO}`,
+      parts,
+      excluded: [...burnList, ...stuckList, ...walletList, ...extraList],
+      note: `Total read across all 7 public EVM OFT deployments (${fmt(rawTotal)} ZRO, less ${fmt2(burned)} ZRO at burn addresses). LayerZeroToken (${EXPLORER.eth}/address/${ZRO}#code) minted the fixed 1,000,000,000 ZRO cap once in its Ethereum constructor with no mint() or burn() function, and protocol fee-switch referendums #1-#4 all voted Off (${ZRO_FEE_SWITCH_SRC}). Scanning peers(eid) across EIDs 1..40499 confirms that the remaining ${fmt(bridgedOut)} ZRO left the 7 EVM OFTs via OFT._debit to the 8th active OFT peer EID 33002 (zerointerop, LayerZero's native-ZRO Zero L1 bound on 2026-11-21 to peer 0x1ced7d571059a30db0fc9adc40346d2a1ce55b31 and listed in https://metadata.layerzero-api.com/v1/metadata with no public RPC yet, plus minor in-flight OFT messages). Excluded balances read live: ${fmt(nonBurnHeld)} ZRO across tokens parked at the OFT contracts themselves, the labeled LayerZero 1 wallet (0x1f90...3909), and the Foundation Stargate-revenue buyback multisig (${ZRO_BUYBACKS_SRC}). Circulating is withheld: per LayerZero's tokenomics (${ZRO_TOKENOMICS_SRC}), Strategic Partners (32.2%, 322M ZRO) and Core Contributors (25.5%, 255M ZRO) vest over 3 years (1-year lock then 24 monthly unlocks through 20 Jun 2027) alongside Foundation Ecosystem & Growth (14.5%, 145M ZRO), while other large Ethereum holders (GnosisSafeProxy 0x744D...DA24 and 0x806f...8431, BitGo WalletSimple contracts 0x6e0e...2427 / 0x637c...F7BF / 0xC2f3...D412, and EOA 0x7be1...7CFD) carry no public treasury or vesting label, so subtracting only the labeled wallets would overstate circulating.`,
     };
   },
 };

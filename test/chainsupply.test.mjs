@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readSupply } from '../collector/sources/chainsupply.mjs';
+import { EVM_RPC } from '../collector/chains.mjs';
 import { tnkReset } from '../collector/sources/trac.mjs';
 
 // Real response shapes, captured from BNB Chain's public RPC and bnbburn.info on 2026-11-21. No network in tests.
@@ -1700,4 +1701,161 @@ test('aster: missing burn, supply above max, or a broken RPC fail closed', async
     fakeAster({ httpStatus: 403 });
     await assert.rejects(readSupply({ method: 'aster' }), /403/);
   } finally { globalThis.fetch = prev; }
+});
+
+// LayerZero (ZRO): 7 public EVM OFT deployments + Ethereum peers(33002) check + labeled/Foundation exclusions.
+// Real eth_call responses captured 2026-11-26 across all 7 EVM RPCs.
+const ZRO_ADDR = '0x6985884c4392d348587b19cb9eaaf157f13271cd';
+const ZRO_DEC_HEX = '0x0000000000000000000000000000000000000000000000000000000000000012';
+const ZRO_ZERO_HEX = '0x' + '0'.repeat(64);
+const ZRO_CAPTURED = {
+  eth: {
+    totalSupply: '0x000000000000000000000000000000000000000002b979293f07721c867b7000', // 843,193,463.474055
+    dead: '0x00000000000000000000000000000000000000000000000004584187f5e86f4b', // 0.3130722263042906
+    self: '0x000000000000000000000000000000000000000000000079053c087cc0377950', // 2,232.433218719542
+    holders: {
+      '0x1f903473376fbe98cc763f1bc459c8fdb6ac3909': '0x00000000000000000000000000000000000000000017fcfca986ca9a5a7c0000', // 28,999,991
+      '0x6ac55e733dff03a54251670df0667774e8f7d28f': '0x00000000000000000000000000000000000000000002405c047e9cf1da0301dc', // 2,721,780.518456483
+    },
+    peer33002: '0x0000000000000000000000001ced7d571059a30db0fc9adc40346d2a1ce55b31',
+  },
+  arbitrum: {
+    totalSupply: '0x00000000000000000000000000000000000000000015cd4b1e454da8c8960000', // 26,356,913.027936
+    dead: '0x0000000000000000000000000000000000000000000000000000005017ff6c18', // 3.44e-7
+    self: '0x0000000000000000000000000000000000000000000003e3c1805a2fff8850bd', // 18,368.4536
+  },
+  bsc: {
+    totalSupply: '0x00000000000000000000000000000000000000000006723922971d1279348000', // 7,792,958.653640
+    dead: '0x0000000000000000000000000000000000000000000000000008e2bf5e98cb03', // 0.00250111
+    self: '0x000000000000000000000000000000000000000000000059c7f7e26130941000', // 1,656.1695
+  },
+  base: {
+    totalSupply: '0x00000000000000000000000000000000000000000004ca2cc0dbeceb95473000', // 5,790,446.861699
+    dead: '0x00000000000000000000000000000000000000000000000001ab6cf38db4da28', // 0.12030961
+    self: '0x0000000000000000000000000000000000000000000000afc4cf6599541b7000', // 3,242.3619
+  },
+  optimism: {
+    totalSupply: '0x00000000000000000000000000000000000000000003f2ad6d215e1dd4bbd000', // 4,772,789.298093
+    dead: ZRO_ZERO_HEX,
+    self: '0x00000000000000000000000000000000000000000000008878b90b4647db15f5', // 2,517.4562
+  },
+  polygon: {
+    totalSupply: '0x000000000000000000000000000000000000000000020ddf9e798caba659c000', // 2,483,367.446748
+    dead: '0x0000000000000000000000000000000000000000000000000006c8eaa45db954', // 0.00190976
+    self: '0x000000000000000000000000000000000000000000000005bebc38171b2d7a60', // 105.9776
+  },
+  avax: {
+    totalSupply: '0x00000000000000000000000000000000000000000000e36445260b144eccd000', // 1,073,826.848701
+    dead: ZRO_ZERO_HEX,
+    self: '0x0000000000000000000000000000000000000000000000058a770765605a4000', // 102.2112
+  },
+};
+
+function fakeLayerZero(over = {}) {
+  const chains = structuredClone(ZRO_CAPTURED);
+  for (const [k, v] of Object.entries(over.chains || {})) Object.assign(chains[k], v);
+  if (over.ethHolders) Object.assign(chains.eth.holders, over.ethHolders);
+  const calls = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    const chain = Object.entries(EVM_RPC).find(([, rpcUrl]) => rpcUrl === u)?.[0];
+    assert.ok(chain && chain in chains, 'unexpected ZRO RPC URL: ' + u);
+    if (over.failChain === chain && over.httpStatus) {
+      return { ok: false, status: over.httpStatus, json: async () => ({}) };
+    }
+    const req = JSON.parse(opts.body);
+    assert.equal(req.method, 'eth_call');
+    assert.equal(req.params[0].to.toLowerCase(), ZRO_ADDR);
+    if (over.failChain === chain && over.rpcError) {
+      return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, error: { message: over.rpcError } }) };
+    }
+    const data = String(req.params[0].data).toLowerCase();
+    calls.push(`${chain}:${data.slice(0, 10)}`);
+    const c = chains[chain];
+    let result;
+    if (data === '0x18160ddd') result = c.totalSupply;
+    else if (data === '0x313ce567') result = ZRO_DEC_HEX;
+    else if (data === '0xbb0b6a5300000000000000000000000000000000000000000000000000000000000080ea') {
+      assert.equal(chain, 'eth');
+      result = over.peer33002 ?? c.peer33002;
+    } else if (data.startsWith('0x70a08231')) {
+      const holder = '0x' + data.slice(-40);
+      if (holder === '0x0000000000000000000000000000000000000000') result = c.zero ?? ZRO_ZERO_HEX;
+      else if (holder === '0x000000000000000000000000000000000000dead') result = c.dead;
+      else if (holder === ZRO_ADDR) result = c.self;
+      else result = c.holders?.[holder] ?? ZRO_ZERO_HEX;
+    } else {
+      throw new Error(`unexpected ${chain} ZRO call ${data}`);
+    }
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) };
+  };
+  return calls;
+}
+
+test('ZRO: seed rule reads 7 EVM OFTs, verifies EID 33002 peer, records labeled/Foundation exclusions, and withholds circulating', async () => {
+  const prev = globalThis.fetch;
+  try {
+    const { layerzero } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+    assert.equal(layerzero.symbol, 'ZRO');
+    assert.equal(layerzero.name, 'LayerZero');
+    assert.deepEqual(layerzero.supply, { method: 'layerzero', max: 1000000000 });
+    const calls = fakeLayerZero();
+    const s = await readSupply(layerzero.supply);
+    assert.ok(calls.includes('eth:0xbb0b6a53'), 'Ethereum peers(33002) is checked live');
+    assert.equal(s.parts.length, 7, 'all 7 public EVM OFT chains are read');
+    assert.deepEqual(s.parts.map(p => p.chain), ['eth', 'arbitrum', 'bsc', 'base', 'optimism', 'polygon', 'avax']);
+    assert.ok(Math.abs(s.total - (891463765.610872 - 0.43779305)) < 1e-4);
+    assert.equal(s.circulating, null, 'circulating is withheld while 57.7% partner/team vesting sits in unlabelled custody');
+    assert.equal(s.max, 1000000000);
+    assert.equal(s.checked, true);
+    assert.equal(s.method, 'layerzero');
+    assert.equal(s.src, 'https://etherscan.io/token/0x6985884C4392D348587B19cb9eAAf157F13271cd');
+    // 5 non-zero dead burns + 7 parked-at-contract balances + LayerZero 1 + Foundation buyback multisig = 14
+    assert.equal(s.excluded.length, 14);
+    const lz1 = s.excluded.find(e => e.holder.toLowerCase() === '0x1f903473376fbe98cc763f1bc459c8fdb6ac3909');
+    const buyback = s.excluded.find(e => e.holder.toLowerCase() === '0x6ac55e733dff03a54251670df0667774e8f7d28f');
+    assert.equal(lz1.amount, 28999991);
+    assert.ok(Math.abs(buyback.amount - 2721780.518456483) < 1e-6);
+    assert.equal(buyback.src, 'https://layerzero.foundation/zro-buybacks');
+    assert.match(s.note, /108,536,234 ZRO left the 7 EVM OFTs via OFT\._debit to the 8th active OFT peer EID 33002/);
+    assert.match(s.note, /https:\/\/info\.layerzero\.foundation\/introducing-zro-d39df554a9b7/);
+    assert.match(s.note, /Strategic Partners \(32\.2%, 322M ZRO\) and Core Contributors \(25\.5%, 255M ZRO\)/);
+    assert.match(s.note, /0x744D\.\.\.DA24/);
+
+    // Optional circulating:true mode subtracts non-burn exclusions + custom exclude entries without double-subtracting burns.
+    const extraHolder = '0x744dbc48d11415ec5cb2f78609dea5e1e738da24';
+    fakeLayerZero({ ethHolders: { [extraHolder]: '0x' + (10000000n * 10n ** 18n).toString(16) } });
+    const s2 = await readSupply({ method: 'layerzero', max: 1000000000, circulating: true, exclude: [{ holder: extraHolder, reason: 'Verified lock' }] });
+    const expectedNonBurn = 28225.06315580857 + 28999991 + 2721780.518456483 + 10_000_000;
+    assert.ok(Math.abs(s2.circulating - (s.total - expectedNonBurn)) < 1e-3);
+  } finally {
+    globalThis.fetch = prev;
+  }
+  assert.equal(globalThis.fetch, prev, 'globalThis.fetch is restored after test');
+});
+
+test('ZRO: missing EID 33002 peer, 7-chain sum above 1B cap, NaN, or any chain RPC/HTTP error fails closed', async () => {
+  const prev = globalThis.fetch;
+  try {
+    fakeLayerZero({ peer33002: ZRO_ZERO_HEX });
+    await assert.rejects(readSupply({ method: 'layerzero' }), /unexpected Ethereum peers\(33002\)/);
+
+    fakeLayerZero({ chains: { arbitrum: { totalSupply: '0x' + (300000000n * 10n ** 18n).toString(16).padStart(64, '0') } } });
+    await assert.rejects(readSupply({ method: 'layerzero', max: 1000000000 }), /outside 1e8\.\.1000000000/);
+
+    fakeLayerZero({ chains: { eth: { totalSupply: '0x0' } } });
+    await assert.rejects(readSupply({ method: 'layerzero' }), /bad eth chain read/);
+
+    fakeLayerZero({ chains: { bsc: { dead: 'NaN' } } });
+    await assert.rejects(readSupply({ method: 'layerzero' }), /Cannot convert NaN/);
+
+    fakeLayerZero({ failChain: 'polygon', rpcError: 'execution reverted' });
+    await assert.rejects(readSupply({ method: 'layerzero' }), /polygon rpc: execution reverted/);
+
+    fakeLayerZero({ failChain: 'avax', httpStatus: 503 });
+    await assert.rejects(readSupply({ method: 'layerzero' }), /503/);
+  } finally {
+    globalThis.fetch = prev;
+  }
+  assert.equal(globalThis.fetch, prev, 'globalThis.fetch is restored after test');
 });

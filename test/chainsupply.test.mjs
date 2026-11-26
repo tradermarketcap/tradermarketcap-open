@@ -1471,3 +1471,53 @@ test('pump-fun: Solana RPC errors and NaN fail the read instead of guessing a su
     }));
   } finally { restore(); }
 });
+
+// Blur (BLUR): total from the ERC-20, circulating net of the three TokenLockup vesting escrows the token
+// contract itself registers. eth_call results captured 2026-11-26.
+const BLUR_TOKEN = '0x5283d291dbcf85356a21ba090e6db59121208b44';
+const BLUR_LOCKUPS = [
+  '0x581e27c21ce60a946f0e866436a025bc89f3fb26',
+  '0x3f1be79ab382f21c284008df07e3d169867db647',
+  '0x00a64427d66cca0303e2f761a1310143682663df',
+];
+const BLUR_RULE = {
+  method: 'tokens',
+  parts: [{ chain: 'eth', address: BLUR_TOKEN }],
+  exclude: BLUR_LOCKUPS.map(holder => ({ chain: 'eth', holder, reason: 'Blur vesting escrow (TokenLockup)' })),
+};
+
+test('blur: circulating subtracts every registered vesting escrow and never exceeds the 3B total', async () => {
+  const restore = fakeEth({ total: 3000000000n * 10n ** 18n, holders: {
+    [BLUR_LOCKUPS[0]]: 870000000n * 10n ** 18n,
+    [BLUR_LOCKUPS[1]]: 32532377n * 10n ** 18n,
+    [BLUR_LOCKUPS[2]]: 15000000n * 10n ** 18n,
+  } });
+  try {
+    const s = await readSupply(BLUR_RULE);
+    assert.equal(s.total, 3000000000);
+    assert.equal(s.excluded.length, 3);
+    assert.equal(s.circulating, 3000000000 - 870000000 - 32532377 - 15000000);
+    assert.ok(s.circulating < s.total, 'circulating is never the raw total');
+    assert.equal(s.checked, true);
+  } finally { restore(); }
+});
+
+test('blur: a lockup read that reverts fails the read instead of overstating circulating', async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const req = JSON.parse(opts.body);
+    const data = req.params[0].data;
+    if (data.startsWith('0x70a08231')) return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, error: { code: 3, message: 'execution reverted' } }) };
+    const result = data === '0x18160ddd' ? '0x' + (3000000000n * 10n ** 18n).toString(16).padStart(64, '0') : '0x' + (18n).toString(16).padStart(64, '0');
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) };
+  };
+  try { await assert.rejects(readSupply(BLUR_RULE), /rpc/); } finally { globalThis.fetch = prevFetch; }
+});
+
+test('blur: the seed rule attaches to the coin id the site actually serves', async () => {
+  const { blur } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  assert.equal(blur.symbol, 'BLUR');
+  assert.equal(blur.supply.parts[0].address, BLUR_TOKEN);
+  assert.equal(blur.supply.exclude.length, 3);
+  for (const h of BLUR_LOCKUPS) assert.ok(blur.supply.exclude.some(e => e.holder.toLowerCase() === h));
+});

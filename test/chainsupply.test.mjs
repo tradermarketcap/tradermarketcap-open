@@ -1365,3 +1365,85 @@ test('VVV: API errors and NaN fail the read', async () => {
   fakeVenice({ burn: {} });
   await assert.rejects(readSupply({ method: 'venice' }), /totalBurned is not an amount/);
 });
+
+// Monad: native MON on chain id 143. Block 125,476,865 (0x77a5c81) from rpc.monad.xyz on 2026-11-26.
+const MONAD_STAKING = '0x0000000000000000000000000000000000001000';
+const MONAD_ZERO = '0x0000000000000000000000000000000000000000';
+const MONAD_DEAD = '0x000000000000000000000000000000000000dead';
+const MONAD_EPOCH = '0x' + '9ce'.padStart(64, '0') + '0'.repeat(64);
+const MONAD_WEI = {
+  [MONAD_ZERO]: '0x152d02c7e14af6800000', // 100,000 MON
+  [MONAD_DEAD]: '0x10f0cf064dd59200000', // 5,000 MON
+  [MONAD_STAKING]: '0x409f9cbc7c4a04c220000000', // 20,000,000,000 MON
+};
+
+function fakeMonad({
+  chainId = '0x8f',
+  blockNumber = '0x77a5c81',
+  getEpoch = MONAD_EPOCH,
+  balances = MONAD_WEI,
+  rpcError,
+  httpStatus,
+} = {}) {
+  globalThis.fetch = async (url, opts = {}) => {
+    if (httpStatus) return { ok: false, status: httpStatus, json: async () => ({}) };
+    const req = JSON.parse(opts.body);
+    const reply = result => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) });
+    if (rpcError) return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, error: { message: rpcError } }) };
+    if (req.method === 'eth_chainId') return reply(chainId);
+    if (req.method === 'eth_blockNumber') return reply(blockNumber);
+    if (req.method === 'eth_call') return reply(getEpoch);
+    const hex = balances[String(req.params[0]).toLowerCase()];
+    if (!hex) throw new Error('unexpected balance address ' + req.params[0]);
+    return reply(hex);
+  };
+}
+
+test('monad: seed rule publishes genesis plus 18 MON per block and withholds circulating', async () => {
+  const { monad } = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  assert.equal(monad.symbol, 'MON');
+  assert.equal(monad.supply.method, 'monad');
+  assert.equal(monad.supply.genesis, 100000000000);
+  assert.equal(monad.supply.rewardPerBlock, 18);
+  assert.equal(monad.supply.circulating, false);
+  fakeMonad();
+  const s = await readSupply(monad.supply);
+  const block = 0x77a5c81;
+  assert.equal(s.total, 100000000000 + 18 * block);
+  assert.equal(s.circulating, null, 'circulating is withheld, never overstated');
+  assert.deepEqual(s.excluded.map(e => [e.holder.toLowerCase(), e.amount]), [
+    [MONAD_ZERO, 100000],
+    [MONAD_DEAD, 5000],
+  ]);
+  assert.equal(s.src, 'https://docs.monad.xyz/monad-arch/consensus/staking');
+  assert.match(s.note, /100 billion MON genesis/);
+  assert.match(s.note, /Circulating supply is not published/);
+  assert.equal(s.checked, true);
+  assert.equal(s.method, 'monad');
+});
+
+test('monad: wrong chain, zero epoch, staking above minted, or a broken RPC fail closed', async () => {
+  const rule = { method: 'monad', genesis: 100000000000, rewardPerBlock: 18, circulating: false };
+  fakeMonad({ chainId: '0x1' });
+  await assert.rejects(readSupply(rule), /not mainnet chain id 143/);
+  fakeMonad({ getEpoch: '0x' + '0'.repeat(128) });
+  await assert.rejects(readSupply(rule), /getEpoch returned 0/);
+  fakeMonad({
+    balances: {
+      [MONAD_ZERO]: '0x0',
+      [MONAD_DEAD]: '0x0',
+      [MONAD_STAKING]: '0x2863c1f5cdae42f9540000000', // 200 billion MON, above minted total
+    },
+  });
+  await assert.rejects(readSupply(rule), /staking contract holds/);
+  fakeMonad({ rpcError: 'rate limited' });
+  await assert.rejects(readSupply(rule), /rate limited/);
+  fakeMonad({ httpStatus: 403 });
+  await assert.rejects(readSupply(rule), /403/);
+});
+
+test('monad: a rule missing genesis or rewardPerBlock fails rather than guessing', async () => {
+  fakeMonad();
+  await assert.rejects(readSupply({ method: 'monad', circulating: false }), /needs genesis and rewardPerBlock/);
+  await assert.rejects(readSupply({ method: 'monad', genesis: 100000000000, circulating: false }), /needs genesis and rewardPerBlock/);
+});

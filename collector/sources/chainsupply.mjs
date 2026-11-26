@@ -668,6 +668,63 @@ const METHODS = {
   async extra() {
     return extraSupply();
   },
+  // Monad (MON, chain id 143). Native gas token, not an ERC-20, so there is no totalSupply().
+  // Total is the Foundation's published 100B genesis (monad.xyz/blog/mon-tokenomics-overview)
+  // plus the protocol inflation of 18 MON per produced block, which is the staking precompile's
+  // documented REWARD (docs.monad.xyz/monad-arch/consensus/staking and the staking API constants).
+  // Block height and chain id are read from a public Monad RPC; getEpoch on the staking precompile
+  // at 0x1000 has to succeed so a wrong-network RPC cannot publish. The staking contract's own
+  // balance is the delegated stake (still the delegators' coins, like bonded RUNE) and is only a
+  // sanity ceiling: if it is ever >= minted total the formula is wrong and the read fails.
+  // Team, investor, treasury and ecosystem allocations are locked off-chain on a schedule the
+  // Foundation publishes but does not label as on-chain vesting contracts, so circulating is
+  // withheld rather than guessed. Zero and burn-address balances are listed; they are not
+  // subtracted from total (they were issued).
+  async monad(r) {
+    const genesis = Number(r.genesis);
+    const reward = Number(r.rewardPerBlock);
+    if (!(genesis > 0) || !(reward > 0)) throw new Error('monad: rule needs genesis and rewardPerBlock');
+    const chainIdHex = await evm('monad', 'eth_chainId', []);
+    if (typeof chainIdHex !== 'string' || !/^0x[0-9a-f]+$/i.test(chainIdHex)) throw new Error('monad: bad chain id');
+    const chainId = Number(BigInt(chainIdHex));
+    if (chainId !== 143) throw new Error('monad: not mainnet chain id 143 (' + chainId + ')');
+    const blockHex = await evm('monad', 'eth_blockNumber', []);
+    if (typeof blockHex !== 'string' || !/^0x[0-9a-f]+$/i.test(blockHex)) throw new Error('monad: bad block number');
+    const block = Number(BigInt(blockHex));
+    if (!(block > 0) || !Number.isSafeInteger(block)) throw new Error('monad: bad block number ' + block);
+    const staking = '0x0000000000000000000000000000000000001000';
+    const epochRaw = await evm('monad', 'eth_call', [{ to: staking, data: '0x757991a8' }, 'latest']);
+    if (typeof epochRaw !== 'string' || !/^0x[0-9a-f]+$/i.test(epochRaw) || epochRaw.length < 66) {
+      throw new Error('monad: bad getEpoch');
+    }
+    const epoch = Number(BigInt('0x' + epochRaw.slice(2, 66)));
+    if (!(epoch > 0)) throw new Error('monad: getEpoch returned 0');
+    const wei = hex => {
+      if (typeof hex !== 'string' || !/^0x[0-9a-f]+$/i.test(hex)) throw new Error('monad: bad balance');
+      return Number(BigInt(hex) / 10n ** 12n) / 1e6;
+    };
+    const [zero, dead, staked] = await Promise.all([
+      evm('monad', 'eth_getBalance', [ZERO, 'latest']).then(wei),
+      evm('monad', 'eth_getBalance', [BURN, 'latest']).then(wei),
+      evm('monad', 'eth_getBalance', [staking, 'latest']).then(wei),
+    ]);
+    const minted = genesis + reward * block;
+    if (!(minted > genesis) || !Number.isFinite(minted)) throw new Error('monad: bad minted total');
+    if (!(staked < minted)) throw new Error(`monad: staking contract holds ${staked} which is not below minted ${minted}`);
+    const scan = EXPLORER.monad + '/address/';
+    const excluded = [
+      { reason: 'Zero address (unspendable)', holder: ZERO, amount: zero, src: scan + ZERO },
+      { reason: 'Burn address', holder: BURN, amount: dead, src: scan + BURN },
+    ].filter(e => e.amount > 0);
+    const publish = r.circulating !== false;
+    return {
+      circulating: publish ? minted - excluded.reduce((s, e) => s + e.amount, 0) : null,
+      total: minted,
+      src: 'https://docs.monad.xyz/monad-arch/consensus/staking',
+      excluded,
+      note: r.note || `Total is Monad Foundation genesis ${genesis.toLocaleString('en-US')} MON plus ${reward} MON minted per produced block (staking precompile REWARD), at height ${block.toLocaleString('en-US')}. Circulating supply is not published.`,
+    };
+  },
   // TON: total supply is the sum of nanoTON (grams) carried in the masterchain head block and all
   // active workchain shard blocks via TonAPI (tonapi.io/v2/blockchain/masterchain-head and /shards).
   // Non-circulating exclusions:

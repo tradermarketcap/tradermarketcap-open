@@ -55,6 +55,28 @@ const WLD_WORLD_WALLETS = [
   ['0xc4151Dd19A38E7224793F5aD8fBDD912750e3565', 'World Assets, Ltd. hot wallet'],
 ];
 
+// Plasma (XPL, chainId 9745). Mainnet genesis.json in PlasmaLaboratories/non-validator-templates mints exactly
+// 10,000,000,000 XPL across four genesis Safe multisigs (0x0000...0a11b001..0a11b004: 2.5B Team, 2.5B Investors,
+// 1.0B Public Sale, 3,999,999,400 Ecosystem & Growth) plus 600 XPL across six 100-XPL bootstrap accounts.
+// Plasma runs unmodified Reth on the execution layer with a static validator committee (Aquila validator-set
+// contract 0x6c50...2F48); per Plasma's tokenomics docs and MiCA whitepaper (G.12), inflation only activates once
+// external validators and stake delegation go live. Bridged XPL on BNB Smart Chain (LayerZero OFT 0x405F...26b0)
+// is backed 1:1 by native XPL locked at the same OFT adapter address on Plasma mainnet, so it is checked, not added.
+const PLASMA_GENESIS_XPL = 10_000_000_000;
+const PLASMA_GENESIS_HASH = '0x0d0ccca452bdb244100115e37de64ca640a255585d5a94df5610052a6dada558';
+const PLASMA_GENESIS_STATE = '0x51a81695b0907da0433793778e86d0cb7429fe171e09e0ff2ee21743eb298355';
+const PLASMA_GENESIS_SRC = 'https://github.com/PlasmaLaboratories/non-validator-templates/blob/main/config/mainnet/genesis.json';
+const PLASMA_DOCS_SRC = 'https://www.plasma.org/docs/get-started/xpl/tokenomics';
+const PLASMA_VALIDATOR_SET = '0x6c50b8ca8EeAa1c75dEe5b5EA79772AcAbc92F48';
+const PLASMA_OFT = '0x405FBc9004D857903bFD6b3357792D71a50726b0';
+const PLASMA_PROTOCOL_SAFES = [
+  ['0x000000000000000000000000000000000a11b001', 'Team genesis Safe (2.5B XPL genesis allocation)'],
+  ['0x000000000000000000000000000000000a11b002', 'Investors genesis Safe (2.5B XPL genesis allocation)'],
+  ['0x000000000000000000000000000000000a11b003', 'Public Sale genesis Safe (1.0B XPL genesis allocation)'],
+  ['0x000000000000000000000000000000000a11b004', 'Ecosystem & Growth genesis Safe (4.0B XPL genesis allocation)'],
+  ['0x000000000000000000000000000000000a11b005', 'Protocol validator fee-recipient Safe'],
+];
+
 // TAP (TAP Protocol on Bitcoin, by Trac). Trac's public TAP Protocol reader: the REST reader Trac's own Digital Matter
 // World kit reads on mainnet. Trac's older socket endpoint, tap.trac.network, now answers 502. A second reader (any
 // Trac tap-reader REST endpoint) can be added with TMC_TAP_READER2, and then has to agree. See the tap method below.
@@ -1008,6 +1030,96 @@ const METHODS = {
         },
       ],
       note: 'P-Chain supply minus C-Chain, P-Chain and X-Chain burned AVAX, cross-checked between Avalanche Data API and live P-Chain / C-Chain RPC reads (staked AVAX counts as circulating).',
+    };
+  },
+  // Plasma (XPL): total is read from Plasma mainnet by verifying the official 10B genesis block stateRoot and
+  // subtracting native XPL permanently burned at the zero and dead addresses, while verifying that consensus
+  // withdrawals remain empty and the Aquila validator-set contract holds no external stake (if validator inflation
+  // activates later, this check fails closed rather than publishing a stale formula). Bridged XPL on BSC (LayerZero
+  // OFT) is checked against the native XPL locked in Plasma's OFT adapter so nothing is double-counted.
+  // Circulating is withheld: Team (25%), Investors (25%) and Ecosystem & Growth (32% post-launch) unlock through
+  // September 2028, but XPL has no protocol-level transfer lock (MiCA whitepaper G.11) and the Team and Investor
+  // genesis Safes have moved their allocations to unpublished custody wallets, so subtracting only the genesis
+  // Safes would overstate circulating supply.
+  async plasma(r = {}) {
+    const xplBal = async addr => {
+      const hex = await evm('plasma', 'eth_getBalance', [addr, 'latest']);
+      if (typeof hex !== 'string' || !/^0x[0-9a-f]+$/i.test(hex)) throw new Error('plasma: bad balance for ' + addr);
+      return Number(BigInt(hex) / 10n ** 12n) / 1e6;
+    };
+    // Public rpc.plasma.to resets bursts above ~4 concurrent TLS handshakes; cap concurrency at 2 so undici reuses sockets.
+    const pool2 = async tasks => {
+      const out = new Array(tasks.length);
+      let k = 0;
+      await Promise.all([0, 1].map(async () => {
+        while (k < tasks.length) { const i = k++; out[i] = await tasks[i](); }
+      }));
+      return out;
+    };
+    const extraCfg = r.exclude || [];
+    const [genesis, head, bscOftTotal, valSetBal, zero, dead, bridgeLocked, ...restBals] = await pool2([
+      () => evm('plasma', 'eth_getBlockByNumber', ['0x0', false]),
+      () => evm('plasma', 'eth_getBlockByNumber', ['latest', false]),
+      () => erc20TotalSupply('bsc', PLASMA_OFT),
+      () => xplBal(PLASMA_VALIDATOR_SET),
+      () => xplBal(ZERO),
+      () => xplBal(BURN),
+      () => xplBal(PLASMA_OFT),
+      ...PLASMA_PROTOCOL_SAFES.map(([h]) => () => xplBal(h)),
+      ...extraCfg.map(e => () => xplBal(e.holder)),
+    ]);
+    const safeBals = restBals.slice(0, PLASMA_PROTOCOL_SAFES.length);
+    const extraBals = restBals.slice(PLASMA_PROTOCOL_SAFES.length);
+    if (String(genesis?.hash).toLowerCase() !== PLASMA_GENESIS_HASH || String(genesis?.stateRoot).toLowerCase() !== PLASMA_GENESIS_STATE) {
+      throw new Error('plasma: unexpected genesis block or stateRoot');
+    }
+    const blockNum = typeof head?.number === 'string' && /^0x[0-9a-f]+$/i.test(head.number) ? Number(BigInt(head.number)) : NaN;
+    if (!(blockNum > 0) || !Array.isArray(head?.withdrawals) || head.withdrawals.length !== 0) {
+      throw new Error('plasma: unexpected head block or active consensus withdrawals');
+    }
+    if (valSetBal !== 0) {
+      throw new Error(`plasma: validator-set contract holds ${valSetBal} XPL; review staking emission state`);
+    }
+    if (![zero, dead, bridgeLocked, bscOftTotal, ...safeBals, ...extraBals].every(v => Number.isFinite(v) && v >= 0) || !(bscOftTotal > 0)) {
+      throw new Error('plasma: bad chain read');
+    }
+    if (bscOftTotal > bridgeLocked * 1.0001) {
+      throw new Error(`plasma: BSC bridged XPL ${bscOftTotal} above the ${bridgeLocked} locked in Plasma OFT adapter`);
+    }
+    const burned = zero + dead;
+    const total = PLASMA_GENESIS_XPL - burned;
+    if (!Number.isFinite(total) || !(total > 0 && total <= PLASMA_GENESIS_XPL)) {
+      throw new Error('plasma: bad total supply ' + total);
+    }
+    const addrUrl = h => `${EXPLORER.plasma}/address/${h}`;
+    const excluded = [
+      ...(zero > 0 ? [{ reason: 'Zero address (unspendable)', holder: ZERO, amount: zero, src: addrUrl(ZERO) }] : []),
+      ...(dead > 0 ? [{ reason: 'Burn address', holder: BURN, amount: dead, src: addrUrl(BURN) }] : []),
+      ...PLASMA_PROTOCOL_SAFES.map(([h, reason], i) => ({
+        reason: `${reason}, per Plasma mainnet genesis.json`,
+        holder: h,
+        amount: safeBals[i],
+        src: PLASMA_GENESIS_SRC,
+      })).filter(e => e.amount > 0),
+      ...extraCfg.map((e, i) => ({
+        reason: e.reason,
+        holder: e.holder,
+        amount: extraBals[i],
+        src: e.src || addrUrl(e.holder),
+      })).filter(e => e.amount > 0),
+    ];
+    const safeHeld = safeBals.reduce((a, b) => a + b, 0) + extraBals.reduce((a, b) => a + b, 0);
+    const ceiling = total - safeHeld;
+    if (!(ceiling > 0 && ceiling <= total)) throw new Error('plasma: bad supply ceiling ' + ceiling);
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    const fmt2 = v => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return {
+      circulating: r.circulating === true ? ceiling : null,
+      total,
+      src: PLASMA_DOCS_SRC,
+      parts: [{ chain: 'plasma', amount: total, src: EXPLORER.plasma }],
+      excluded,
+      note: `Total read from Plasma mainnet (verified 10,000,000,000 XPL genesis stateRoot in ${PLASMA_GENESIS_SRC}, less ${fmt2(burned)} XPL burned at the zero and dead addresses; consensus withdrawals are empty and validator inflation is inactive until external stake delegation launches per ${PLASMA_DOCS_SRC}). The ${fmt(bscOftTotal)} bridged XPL on BNB Smart Chain (${EXPLORER.bsc}/token/${PLASMA_OFT}) are LayerZero OFT tokens backed by ${fmt(bridgeLocked)} XPL locked in Plasma's OFT adapter (${addrUrl(PLASMA_OFT)}), so they sit inside the mainnet total. The genesis and protocol Safes still hold ${fmt(safeHeld)} XPL on-chain. Circulating is withheld: Team (25%), Investors (25%) and Ecosystem & Growth (32% post-launch) unlock on schedule through 25 Sep 2028 (${PLASMA_DOCS_SRC}), XPL carries no protocol-level transfer lock (MiCA whitepaper G.11), and the Team and Investor genesis Safes moved their allocations to unpublished custody wallets, so subtracting only the genesis Safes would overstate circulating.`,
     };
   },
 };

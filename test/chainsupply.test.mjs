@@ -1471,3 +1471,110 @@ test('pump-fun: Solana RPC errors and NaN fail the read instead of guessing a su
     }));
   } finally { restore(); }
 });
+
+// Plasma (XPL): mainnet RPC + BSC OFT responses captured 2026-11-26.
+const PLASMA_MOCK = {
+  genesis: {
+    hash: '0x0d0ccca452bdb244100115e37de64ca640a255585d5a94df5610052a6dada558',
+    stateRoot: '0x51a81695b0907da0433793778e86d0cb7429fe171e09e0ff2ee21743eb298355',
+  },
+  head: { number: '0x24ebe7c', withdrawals: [] },
+  balances: {
+    '0x0000000000000000000000000000000000000000': '0x' + 22537648049000000000000n.toString(16),
+    '0x000000000000000000000000000000000000dead': '0x' + 8869016000000000000n.toString(16),
+    '0x6c50b8ca8eeaa1c75dee5b5ea79772acabc92f48': '0x0',
+    '0x405fbc9004d857903bfd6b3357792d71a50726b0': '0x' + 262112458642873000000000000n.toString(16),
+    '0x000000000000000000000000000000000a11b004': '0x' + 10020606550679000000000000n.toString(16),
+    '0x000000000000000000000000000000000a11b005': '0x' + 1206708416786000000000000n.toString(16),
+  },
+  bscTotalSupply: '0x' + (261286719091448000000000000n).toString(16).padStart(64, '0'),
+  bscDecimals: '0x' + (18).toString(16).padStart(64, '0'),
+};
+
+function fakePlasma(over = {}) {
+  const genesis = { ...PLASMA_MOCK.genesis, ...over.genesis };
+  const head = { ...PLASMA_MOCK.head, ...over.head };
+  const balances = { ...PLASMA_MOCK.balances, ...over.balances };
+  const bscTotal = over.bscTotalSupply ?? PLASMA_MOCK.bscTotalSupply;
+  globalThis.fetch = async (url, opts = {}) => {
+    if (over.httpStatus && over.httpStatus !== 200) {
+      return { ok: false, status: over.httpStatus, json: async () => ({}) };
+    }
+    const u = String(url);
+    const req = JSON.parse(opts.body);
+    const reply = result => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) });
+    if (u.includes('bsc')) {
+      assert.equal(req.method, 'eth_call');
+      const d = req.params[0].data;
+      if (d === '0x18160ddd') return reply(bscTotal);
+      if (d === '0x313ce567') return reply(PLASMA_MOCK.bscDecimals);
+      throw new Error('unexpected BSC call ' + d);
+    }
+    assert.ok(u.includes('plasma'), 'unexpected RPC URL ' + u);
+    if (req.method === 'eth_getBlockByNumber') {
+      return reply(req.params[0] === '0x0' ? genesis : head);
+    }
+    if (req.method === 'eth_getBalance') {
+      const addr = req.params[0].toLowerCase();
+      const val = addr in balances ? balances[addr] : '0x0';
+      if (val instanceof Error) return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, error: { message: val.message } }) };
+      return reply(val);
+    }
+    throw new Error('unexpected Plasma RPC method ' + req.method);
+  };
+}
+
+test('XPL: seed rule verifies Plasma genesis, subtracts zero/dead burns, checks BSC OFT backing, and withholds circulating', async () => {
+  const rule = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8')).plasma;
+  assert.deepEqual(rule, { symbol: 'XPL', name: 'Plasma', supply: { method: 'plasma' } });
+  fakePlasma();
+  const s = await readSupply(rule.supply);
+  assert.ok(Math.abs(s.total - (10_000_000_000 - 22537.648049 - 8.869016)) < 1e-5);
+  assert.equal(s.circulating, null, 'circulating is withheld when vesting custody wallets are unpublished');
+  assert.equal(s.max, null);
+  assert.equal(s.checked, true);
+  assert.equal(s.parts.length, 1);
+  assert.equal(s.parts[0].chain, 'plasma');
+  assert.deepEqual(
+    s.excluded.map(e => e.holder),
+    [
+      '0x0000000000000000000000000000000000000000',
+      '0x000000000000000000000000000000000000dEaD',
+      '0x000000000000000000000000000000000a11b004',
+      '0x000000000000000000000000000000000a11b005',
+    ],
+    'emptied genesis Safes 0a11b001..3 are omitted while non-zero burns and Safes are listed',
+  );
+  assert.match(s.note, /less 22,546\.52 XPL burned at the zero and dead addresses/);
+  assert.match(s.note, /261,286,719 bridged XPL on BNB Smart Chain .* backed by 262,112,459 XPL locked/);
+  assert.match(s.note, /Circulating is withheld/);
+
+  // Optional circulating:true mode subtracts non-burn Safes + configured exclude list cleanly.
+  const customHolder = '0xcf54cb695a70f466fd5a271f85a7e268c2c97b25';
+  fakePlasma({ balances: { [customHolder]: '0x' + (1000000000n * 10n ** 18n).toString(16) } });
+  const s2 = await readSupply({ method: 'plasma', circulating: true, exclude: [{ holder: customHolder, reason: 'Custody lock' }] });
+  assert.ok(Math.abs(s2.circulating - (s.total - 10020606.550679 - 1206708.416786 - 1_000_000_000)) < 1e-4);
+});
+
+test('XPL: wrong genesis, active withdrawals, staked validator-set, unbacked BSC OFT, or bad RPC data fail closed', async () => {
+  fakePlasma({ genesis: { stateRoot: '0x' + '11'.repeat(32) } });
+  await assert.rejects(readSupply({ method: 'plasma' }), /unexpected genesis/);
+
+  fakePlasma({ head: { withdrawals: [{ index: '0x0', amount: '0x1' }] } });
+  await assert.rejects(readSupply({ method: 'plasma' }), /active consensus withdrawals/);
+
+  fakePlasma({ balances: { '0x6c50b8ca8eeaa1c75dee5b5ea79772acabc92f48': '0xde0b6b3a7640000' } });
+  await assert.rejects(readSupply({ method: 'plasma' }), /validator-set contract holds/);
+
+  fakePlasma({ bscTotalSupply: '0x' + (300000000n * 10n ** 18n).toString(16).padStart(64, '0') });
+  await assert.rejects(readSupply({ method: 'plasma' }), /above the .* locked in Plasma OFT adapter/);
+
+  fakePlasma({ balances: { '0x0000000000000000000000000000000000000000': 'NaN' } });
+  await assert.rejects(readSupply({ method: 'plasma' }), /bad balance/);
+
+  fakePlasma({ balances: { '0x000000000000000000000000000000000a11b004': new Error('rpc reverted') } });
+  await assert.rejects(readSupply({ method: 'plasma' }), /plasma rpc/);
+
+  fakePlasma({ httpStatus: 503 });
+  await assert.rejects(readSupply({ method: 'plasma' }), /503/);
+});

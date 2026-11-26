@@ -9,11 +9,13 @@ export const EVM_RPC = {
   avax: process.env.TMC_RPC_AVAX || 'https://api.avax.network/ext/bc/C/rpc',
   optimism: process.env.TMC_RPC_OPTIMISM || 'https://mainnet.optimism.io',
   polygon: process.env.TMC_RPC_POLYGON || 'https://polygon.drpc.org',
+  plasma: process.env.TMC_RPC_PLASMA || 'https://rpc.plasma.to',
 };
 export const EXPLORER = {
   eth: 'https://etherscan.io', bsc: 'https://bscscan.com', base: 'https://basescan.org',
   arbitrum: 'https://arbiscan.io', avax: 'https://snowtrace.io',
   optimism: 'https://optimistic.etherscan.io', polygon: 'https://polygonscan.com',
+  plasma: 'https://plasmascan.to',
 };
 export const SOL_RPC = process.env.TMC_RPC_SOL || 'https://api.mainnet-beta.solana.com';
 

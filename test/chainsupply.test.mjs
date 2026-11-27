@@ -1511,6 +1511,81 @@ test('WLD: a non-standard Optimism token, more WLD on Optimism than locked, or a
   await assert.rejects(readSupply({ method: 'worldcoin' }), /503/);
 });
 
+// SQD (Subsquid): total from Ethereum, the Arbitrum and Base deployments are bridged copies checked
+// against the SQD locked in their Ethereum escrows, circulating withheld. The mock values are the
+// live chain reads of 2026-11-27.
+const SQD_W = s => { const [i, f = ''] = String(s).split('.'); return '0x' + BigInt(i + f.padEnd(18, '0')).toString(16).padStart(64, '0'); };
+const SQD_DEC = '0x' + (18n).toString(16).padStart(64, '0');
+const SQD_RPC = {
+  eth: {
+    '0x18160ddd': SQD_W('1337000000'),
+    '0x313ce567': SQD_DEC,
+    'cee284f754e854890e311e3280b767f80797180d': SQD_W('1326360044.3963566'), // Arbitrum gateway escrow
+    '3154cf16ccdb4c6d922629664174b904d80f2c35': SQD_W('10639595.89262444'), // Base L1StandardBridge
+  },
+  arbitrum: {
+    '0x18160ddd': SQD_W('1326358844.3072295'),
+    '0x313ce567': SQD_DEC,
+    '0xc2eeeebd': '0x0000000000000000000000001337420ded5adb9980cfc35f8f2b054ea86f8ab1', // l1Address()
+    '0x8fa74a0e': '0x000000000000000000000000096760f208390250649e3e8763348e783aef5562', // l2Gateway()
+  },
+  base: {
+    '0x18160ddd': SQD_W('10513945.54219148'),
+    '0x313ce567': SQD_DEC,
+    '0xd6c0b2c4': '0x0000000000000000000000001337420ded5adb9980cfc35f8f2b054ea86f8ab1', // remoteToken()
+    '0xe78cea92': '0x0000000000000000000000004200000000000000000000000000000000000010', // bridge()
+  },
+};
+function fakeSqd(over = {}) {
+  const rpc = { eth: { ...SQD_RPC.eth, ...over.eth }, arbitrum: { ...SQD_RPC.arbitrum, ...over.arbitrum }, base: { ...SQD_RPC.base, ...over.base } };
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    const chain = u.includes('arb1') ? 'arbitrum' : u.includes('base') ? 'base' : 'eth';
+    const req = JSON.parse(opts.body);
+    assert.equal(req.method, 'eth_call');
+    const data = req.params[0].data.toLowerCase();
+    let result = data.startsWith('0x70a08231') ? rpc[chain][data.slice(-40)] ?? '0x' + '0'.repeat(64) : rpc[chain][data];
+    if (result === undefined) throw new Error(`unexpected ${chain} call ${data}`);
+    if (result instanceof Error) return { ok: false, status: 503, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) };
+  };
+}
+
+test('SQD: total from Ethereum, Arbitrum and Base checked against their escrows, circulating withheld', async () => {
+  const rule = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8')).subsquid;
+  assert.equal(rule.symbol, 'SQD');
+  assert.equal(rule.name, 'Subsquid');
+  assert.equal(rule.supply.method, 'subsquid');
+  assert.equal(rule.supply.max, 1337000000);
+  assert.match(rule.supply.note, /Circulating is withheld/);
+  fakeSqd();
+  const s = await readSupply(rule.supply);
+  assert.ok(Math.abs(s.total - 1337000000) < 0.01);
+  assert.equal(s.circulating, null);
+  assert.equal(s.max, 1337000000);
+  assert.deepEqual(s.excluded, []);
+  assert.match(s.note, /The 1,326,358,844 SQD on Arbitrum/);
+  assert.match(s.note, /backed by 1,326,360,044 SQD locked in the gateway's Ethereum escrow/);
+  assert.match(s.note, /the 10,513,946 SQD on Base/);
+  assert.match(s.note, /backed by 10,639,596 SQD locked in Base's L1StandardBridge on Ethereum/);
+  assert.match(s.note, /Circulating is withheld/);
+});
+
+test('SQD: a non-canonical bridge token, a bridged supply above its escrow, or a failed read fails', async () => {
+  fakeSqd({ arbitrum: { '0xc2eeeebd': '0x000000000000000000000000' + '11'.repeat(20) } });
+  await assert.rejects(readSupply({ method: 'subsquid', max: 1337000000 }), /not the custom-gateway bridged Ethereum SQD/);
+  fakeSqd({ arbitrum: { '0x8fa74a0e': '0x000000000000000000000000' + '22'.repeat(20) } });
+  await assert.rejects(readSupply({ method: 'subsquid', max: 1337000000 }), /not the custom-gateway bridged Ethereum SQD/);
+  fakeSqd({ arbitrum: { '0x18160ddd': SQD_W('1400000000') } });
+  await assert.rejects(readSupply({ method: 'subsquid', max: 1337000000 }), /above the .* locked in the Arbitrum gateway escrow/);
+  fakeSqd({ base: { '0xd6c0b2c4': '0x000000000000000000000000' + '33'.repeat(20) } });
+  await assert.rejects(readSupply({ method: 'subsquid', max: 1337000000 }), /not the standard-bridged Ethereum SQD/);
+  fakeSqd({ base: { '0x18160ddd': SQD_W('11000000') } });
+  await assert.rejects(readSupply({ method: 'subsquid', max: 1337000000 }), /above the .* locked in the Base bridge/);
+  fakeSqd({ eth: { '0x18160ddd': new Error('down') } });
+  await assert.rejects(readSupply({ method: 'subsquid', max: 1337000000 }), /503/);
+});
+
 // Pump.fun: the official mint is fixed, but team/investor/ecosystem/foundation wallets are not
 // published, so the rule publishes the live chain total and withholds circulating.
 const PUMP_MINT = 'pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn';

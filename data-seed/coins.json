@@ -329,5 +329,18 @@
       "circulating": false,
       "max": 21000000
     }
+  },
+  "subsquid": {
+    "symbol": "SQD",
+    "name": "Subsquid",
+    "links": {
+      "site": "https://docs.sqd.dev/en/network/tokenomics",
+      "contract": "https://etherscan.io/token/0x1337420dED5ADb9980CFc35f8f2B054ea86f8aB1"
+    },
+    "supply": {
+      "method": "subsquid",
+      "max": 1337000000,
+      "note": "Total is the Ethereum totalSupply: the fixed 1,337,000,000 SQD of Subsquid's tokenomics (https://docs.sqd.dev/en/network/tokenomics). The Arbitrum and Base deployments named in Subsquid's contract list (https://docs.sqd.dev/en/other/contracts) are bridged copies, checked against the SQD locked in their Ethereum bridge escrows and counted once. Circulating is withheld: Reserved Treasury (28.1%, 36-month vesting) and Worker Rewards (10%, 84-month vesting) are not held in the on-chain vesting contracts and Subsquid publishes no treasury addresses, so the still-locked remainder cannot be proven."
+    }
   }
 }

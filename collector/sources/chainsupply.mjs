@@ -77,6 +77,21 @@ const WLD_WORLD_WALLETS = [
   ['0xc4151Dd19A38E7224793F5aD8fBDD912750e3565', 'World Assets, Ltd. hot wallet'],
 ];
 
+// SQD (Subsquid): the ERC-20 on Ethereum holds the whole fixed 1,337,000,000 supply (Subsquid's tokenomics,
+// docs.sqd.dev/en/network/tokenomics). Subsquid's own contract list (docs.sqd.dev/en/other/contracts) names the
+// same address on Arbitrum One, where the token is the Arbitrum custom-gateway bridge token (l1Address() is the
+// Ethereum SQD, l2Gateway() is the L2 Custom Gateway), and a Base deployment that is an OptimismMintableERC20 of
+// the Ethereum SQD (remoteToken() is the Ethereum SQD, bridge() is the L2StandardBridge). Both are backed by SQD
+// locked in Ethereum bridge escrows, so they are checked, not added.
+const SQD_ETH = '0x1337420dED5ADb9980CFc35f8f2B054ea86f8aB1';
+const SQD_ARB = '0x1337420dED5ADb9980CFc35f8f2B054ea86f8aB1';
+const SQD_BASE = '0xd4554bea546efa83c1e6b389ecac40ea999b3e78';
+const SQD_ARB_GATEWAY = '0x096760F208390250649E3e8763348E783AEF5562'; // L2 Custom Gateway on Arbitrum
+const SQD_ARB_ESCROW = '0xcEe284F754E854890e311e3280b767F80797180d'; // "Arbitrum One: L1 Arb - Custom Gateway" escrow on Ethereum (Etherscan label)
+const SQD_BASE_L1_BRIDGE = '0x3154Cf16ccdb4C6d922629664174b904d80F2C35'; // Base L1StandardBridge on Ethereum
+const SQD_CONTRACTS = 'https://docs.sqd.dev/en/other/contracts';
+const SQD_TOKENOMICS = 'https://docs.sqd.dev/en/network/tokenomics';
+
 // Plasma (XPL, chainId 9745). Mainnet genesis.json in PlasmaLaboratories/non-validator-templates mints exactly
 // 10,000,000,000 XPL across four genesis Safe multisigs (0x0000...0a11b001..0a11b004: 2.5B Team, 2.5B Investors,
 // 1.0B Public Sale, 3,999,999,400 Ecosystem & Growth) plus 600 XPL across six 100-XPL bootstrap accounts.
@@ -596,6 +611,53 @@ const METHODS = {
         ...(zero > 0 ? [{ reason: 'Zero address (unspendable)', holder: ZERO, amount: zero, src: holder(ZERO) }] : []),
       ],
       note: `Total read from BNB Chain: totalSupply ${fmt(supply)} ASTER of the BEP-20 named in Aster's token overview (${ASTER_OVERVIEW}) minus ${fmt(burned)} ASTER at the burn address. Aster's tokenomics (${ASTER_DOCS}) burn from reserve until supply reaches 3B and do not decrement totalSupply() on those transfers. Circulating is withheld: that page says Treasury (560M, 7%) is fully locked and Team (400M, 5%) stays locked until 17 Sep 2027, without publishing those addresses, so subtracting them would guess. Ecosystem vesting was replaced by staking emissions after January 2026; those emissions are not treated as locked.`,
+    };
+  },
+  // Subsquid (SQD). Total is read from Ethereum: totalSupply of the SQD ERC-20 minus the dead and zero
+  // address balances; Subsquid's tokenomics fixes the supply at 1,337,000,000. The Arbitrum and Base
+  // deployments named in Subsquid's contract list are read as checks, not added: the Arbitrum token must
+  // name the Ethereum SQD as l1Address and the L2 Custom Gateway as l2Gateway, and its totalSupply must
+  // not exceed the SQD locked in that gateway's Ethereum escrow; the Base token must name the Ethereum
+  // SQD as remoteToken and the L2StandardBridge as bridge, and its totalSupply must not exceed the SQD
+  // locked in Base's L1StandardBridge on Ethereum. Any failed or inconsistent read fails the whole read.
+  // Circulating is withheld (see the note): the two largest still-vesting allocations are not held in the
+  // on-chain vesting contracts and Subsquid publishes no treasury addresses, so the locked remainder
+  // cannot be proven and subtracting only the provable locks would overstate circulating.
+  async subsquid(r = {}) {
+    const addr = h => '0x' + String(h).slice(-40).toLowerCase();
+    const [total, dead, zero, arbTotal, arbL1, arbGateway, arbEscrow, baseTotal, baseRemote, baseBridge, baseEscrow] = await Promise.all([
+      erc20TotalSupply('eth', SQD_ETH),
+      erc20Balance('eth', SQD_ETH, BURN),
+      erc20Balance('eth', SQD_ETH, ZERO),
+      erc20TotalSupply('arbitrum', SQD_ARB),
+      evm('arbitrum', 'eth_call', [{ to: SQD_ARB, data: '0xc2eeeebd' }, 'latest']), // l1Address()
+      evm('arbitrum', 'eth_call', [{ to: SQD_ARB, data: '0x8fa74a0e' }, 'latest']), // l2Gateway()
+      erc20Balance('eth', SQD_ETH, SQD_ARB_ESCROW),
+      erc20TotalSupply('base', SQD_BASE),
+      evm('base', 'eth_call', [{ to: SQD_BASE, data: '0xd6c0b2c4' }, 'latest']), // remoteToken()
+      evm('base', 'eth_call', [{ to: SQD_BASE, data: '0xe78cea92' }, 'latest']), // bridge()
+      erc20Balance('eth', SQD_ETH, SQD_BASE_L1_BRIDGE),
+    ]);
+    if (![total, dead, zero, arbTotal, arbEscrow, baseTotal, baseEscrow].every(Number.isFinite) || !(total > 0)) throw new Error('subsquid: bad chain read');
+    if (addr(arbL1) !== SQD_ETH.toLowerCase() || addr(arbGateway) !== SQD_ARB_GATEWAY.toLowerCase()) throw new Error(`subsquid: Arbitrum SQD is not the custom-gateway bridged Ethereum SQD (${arbL1}, ${arbGateway})`);
+    if (arbTotal > arbEscrow * 1.0001) throw new Error(`subsquid: Arbitrum SQD ${arbTotal} above the ${arbEscrow} locked in the Arbitrum gateway escrow`);
+    if (addr(baseRemote) !== SQD_ETH.toLowerCase() || addr(baseBridge) !== OP_L2_BRIDGE.toLowerCase()) throw new Error(`subsquid: Base SQD is not the standard-bridged Ethereum SQD (${baseRemote}, ${baseBridge})`);
+    if (baseTotal > baseEscrow * 1.0001) throw new Error(`subsquid: Base SQD ${baseTotal} above the ${baseEscrow} locked in the Base bridge`);
+    const max = Number(r.max);
+    if (max > 0 && total > max * 1.0001) throw new Error(`subsquid: totalSupply ${total} above max ${max}`);
+    const burned = dead + zero;
+    const net = total - burned;
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    const eth = h => `${EXPLORER.eth}/token/${SQD_ETH}?a=${h}`;
+    return {
+      circulating: r.circulating === true ? net : null,
+      total: net,
+      src: `${EXPLORER.eth}/token/${SQD_ETH}`,
+      excluded: [
+        ...(dead > 0 ? [{ reason: 'Burn address', holder: BURN, amount: dead, src: eth(BURN) }] : []),
+        ...(zero > 0 ? [{ reason: 'Zero address (unspendable)', holder: ZERO, amount: zero, src: eth(ZERO) }] : []),
+      ],
+      note: `Total read from Ethereum, where the whole supply sits: ${fmt(total)} SQD, less ${fmt(burned)} at the burn and zero addresses; Subsquid's tokenomics (${SQD_TOKENOMICS}) fixes the supply at 1,337,000,000. The ${fmt(arbTotal)} SQD on Arbitrum (${EXPLORER.arbitrum}/token/${SQD_ARB}) are bridged copies (l1Address = Ethereum SQD, L2 Custom Gateway) backed by ${fmt(arbEscrow)} SQD locked in the gateway's Ethereum escrow, and the ${fmt(baseTotal)} SQD on Base (${EXPLORER.base}/token/${SQD_BASE}) are bridged copies (remoteToken = Ethereum SQD, L2StandardBridge) backed by ${fmt(baseEscrow)} SQD locked in Base's L1StandardBridge on Ethereum, so both are inside the Ethereum figure. Subsquid's contract list (${SQD_CONTRACTS}) also names a BNB Chain deployment (0xe50e3d1a46070444f44df911359033f2937fcc13, a PeerToken minted and burned by a bridge operator proxy): no escrow backing it could be proven, since the Ethereum supply is fully accounted for by the two bridge escrows above and Subsquid publishes no escrow for it, so it is neither added nor checked; if it is backed from the Arbitrum supply it is already inside the total. Circulating is withheld: per the tokenomics, Reserved Treasury (28.1%) vests over 36 months and Worker Rewards (10%) over 84 months, but those allocations are not held in the on-chain SubsquidVesting contracts and Subsquid publishes no treasury wallet addresses, so their still-locked remainder cannot be proven; the vesting contracts enumerable from the official VestingFactory still hold unvested team and investor tokens, and subtracting only those provable locks would overstate circulating. SQD that users lock in the network contracts (worker bonds in WorkerRegistration, staking, gateway and portal locks) counts as circulating, as staked tokens do.`,
     };
   },
   // Official Trump (TRUMP, Solana). Total is the live SPL mint supply. Circulating is that total

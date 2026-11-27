@@ -727,19 +727,36 @@ const METHODS = {
   },
   async mmt() {
     const coinType = '0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT';
+    const campaign = '0x6c7ba0bccc5b6089500ce1d6c2b8fbd7bc5daeba3479ea268842f40fdfd3ec62';
+    const reserve = '0x8bb5a9f523ef6a0eb74d7c0f636fd3fbff3489135ca330ec2e2e656d60314de1';
     const src = 'https://graphql.mainnet.sui.io/graphql';
+    const emissions = 'https://docs.mmt.finance/overview/emissions.md';
+    const query = `{ total: coinMetadata(coinType: "${coinType}") { decimals supply } campaign: address(address: "${campaign}") { balance(coinType: "${coinType}") { totalBalance } } reserve: address(address: "${reserve}") { balance(coinType: "${coinType}") { totalBalance } } }`;
     const gql = await getJSON(src, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: `{ coinMetadata(coinType: "${coinType}") { decimals supply } }` }),
+      body: JSON.stringify({ query }),
     });
-    const meta = gql?.data?.coinMetadata;
-    if (!meta?.supply || !Number.isInteger(meta.decimals)) throw new Error('bad mmt supply metadata');
-    const total = Number(BigInt(meta.supply)) / 10 ** meta.decimals;
+    const data = gql?.data;
+    if (!data?.total?.supply || !Number.isInteger(data.total.decimals)) throw new Error('bad mmt supply metadata');
+    const decimals = data.total.decimals;
+    const scale = 10 ** decimals;
+    const total = Number(BigInt(data.total.supply)) / scale;
     if (!(total > 0)) throw new Error('bad mmt total supply ' + total);
+    const amount = (entry) => {
+      const raw = entry?.balance?.totalBalance;
+      if (!raw || !/^\d+$/.test(raw)) throw new Error('bad mmt exclusion balance');
+      return Number(BigInt(raw)) / scale;
+    };
+    const campaignAmount = amount(data.campaign);
+    const reserveAmount = amount(data.reserve);
+    const excluded = [
+      { reason: 'Momentum Ignition campaign allocation multisig (official emissions announcement)', amount: campaignAmount, src: emissions },
+      { reason: 'MMT emission reserve multisig (official emissions announcement)', amount: reserveAmount, src: emissions },
+    ];
+    if (campaignAmount + reserveAmount > total) throw new Error('mmt exclusions above total');
     return {
-      circulating: false, total, src,
-      excluded: [],
-      note: 'MMT coin type is named in Momentum’s own msafe-sui-app-store repository (src/apps/mmt-dex/types.ts); total supply is read from Sui GraphQL mainnet. Momentum publishes a 4-year team cliff and a 12-month investor cliff with 48-month vesting (docs.mmt.finance/overview/mmt-token.md) but no per-wallet addresses for those locks, and no explorer label ties a live holder to them, so circulating stays withheld rather than overstated.',
+      circulating: false, total, src, excluded,
+      note: 'MMT coin type is named in Momentum’s own msafe-sui-app-store repository (src/apps/mmt-dex/types.ts); total supply and the two public emission multisig balances are read from Sui GraphQL mainnet. The multisigs are named in Momentum’s official emissions announcement. Team and investor vesting schedules are published at docs.mmt.finance/overview/mmt-token.md but their wallet addresses are not, and no explorer label ties a live holder to them, so circulating stays withheld rather than overstated.',
     };
   },
   // Aptos (APT): the Aptos Foundation publishes its own live supply API, linked as "Current

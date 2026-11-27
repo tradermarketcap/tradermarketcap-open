@@ -10,12 +10,14 @@ export const EVM_RPC = {
   optimism: process.env.TMC_RPC_OPTIMISM || 'https://mainnet.optimism.io',
   polygon: process.env.TMC_RPC_POLYGON || 'https://polygon.drpc.org',
   plasma: process.env.TMC_RPC_PLASMA || 'https://rpc.plasma.to',
+  xlayer: process.env.TMC_RPC_XLAYER || 'https://rpc.xlayer.tech',
 };
 export const EXPLORER = {
   eth: 'https://etherscan.io', bsc: 'https://bscscan.com', base: 'https://basescan.org',
   arbitrum: 'https://arbiscan.io', avax: 'https://snowtrace.io',
   optimism: 'https://optimistic.etherscan.io', polygon: 'https://polygonscan.com',
   plasma: 'https://plasmascan.to',
+  xlayer: 'https://www.okx.com/web3/explorer/xlayer',
 };
 export const SOL_RPC = process.env.TMC_RPC_SOL || 'https://api.mainnet-beta.solana.com';
 

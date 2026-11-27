@@ -1708,6 +1708,129 @@ const METHODS = {
       note: r.note || `Total is the Ethereum ERC-20 totalSupply (${fmt(ethTotal)} RLUSD at ${EXPLORER.eth}/token/${RLUSD_ETH}) plus XRP Ledger issuer obligations (${fmt(xrplTotal)} RLUSD issued by ${RLUSD_XRPL_ISSUER} at ledger ${ledgerIndex}; ${RLUSD_SITE_SRC}). Bridged L2 copies (such as Base via Wormhole NTT) are backed by RLUSD locked on Ethereum and are not added again. Circulating subtracts ${fmt(nonCirculating)} RLUSD held in Ripple's XRPL distribution/treasury hotwallets (verified via gateway_balances hotwallet and XRPSCAN ripple.com labels), Ethereum MINTER_ROLE and BURNER_ROLE redemption multisigs (verified live via AccessControl.hasRole on ${RLUSD_ETH}), tokens stuck at the token proxy contract itself, and burn addresses.`,
     };
   },
+  // OKB: fixed 21,000,000 cap across native X Layer gas (chainId 196, OP Stack rollup, zero block-reward inflation)
+  // and remaining unmigrated Ethereum L1 ERC-20 supply (0x75231f58b43240c9718dd58b4967c5114342a86c, mint/burn removed),
+  // less on-chain burns on both chains. Bridged L1 lockups are subtracted from the Ethereum share to avoid double-counting.
+  async okb(r) {
+    const weiOf = (hex, what) => {
+      if (typeof hex !== 'string' || !/^0x[0-9a-f]+$/i.test(hex)) throw new Error(`okb: bad ${what} (${hex})`);
+      return BigInt(hex);
+    };
+    const toNum = w => Number(w / 10n ** 12n) / 1e6;
+    const pad = a => a.toLowerCase().replace(/^0x/, '').padStart(64, '0');
+    const pool2 = async tasks => {
+      const out = new Array(tasks.length);
+      let k = 0;
+      await Promise.all([0, 1].map(async () => {
+        while (k < tasks.length) { const i = k++; out[i] = await tasks[i](); }
+      }));
+      return out;
+    };
+
+    const extraCfg = r.exclude || [];
+    const ethToken = { chain: 'eth', address: OKB_ETH };
+    const [
+      xlChainHex, xlGenesis, xlBlockHex, xlZeroHex, xlDeadHex,
+      ethDecHex, ethTotalHex, ethZeroHex, ethDeadHex, ethBridgeHex,
+      ...extraHex
+    ] = await pool2([
+      () => evm('xlayer', 'eth_chainId', []),
+      () => evm('xlayer', 'eth_getBlockByNumber', ['0x0', false]),
+      () => evm('xlayer', 'eth_blockNumber', []),
+      () => evm('xlayer', 'eth_getBalance', [ZERO, 'latest']),
+      () => evm('xlayer', 'eth_getBalance', [BURN, 'latest']),
+      () => evm('eth', 'eth_call', [{ to: OKB_ETH, data: '0x313ce567' }, 'latest']),
+      () => evm('eth', 'eth_call', [{ to: OKB_ETH, data: '0x18160ddd' }, 'latest']),
+      () => evm('eth', 'eth_call', [{ to: OKB_ETH, data: '0x70a08231' + pad(ZERO) }, 'latest']),
+      () => evm('eth', 'eth_call', [{ to: OKB_ETH, data: '0x70a08231' + pad(BURN) }, 'latest']),
+      () => evm('eth', 'eth_call', [{ to: OKB_ETH, data: '0x70a08231' + pad(OKB_XLAYER_LEGACY_BRIDGE) }, 'latest']),
+      ...extraCfg.map(e => () => {
+        const ch = e.chain || 'xlayer';
+        if (ch === 'eth') return evm('eth', 'eth_call', [{ to: OKB_ETH, data: '0x70a08231' + pad(e.holder) }, 'latest']);
+        return evm(ch, 'eth_getBalance', [e.holder, 'latest']);
+      }),
+    ]);
+
+    if (Number(weiOf(xlChainHex, 'X Layer chainId')) !== XLAYER_CHAIN_ID) {
+      throw new Error(`okb: unexpected X Layer chainId ${xlChainHex}`);
+    }
+    if (
+      String(xlGenesis?.hash).toLowerCase() !== XLAYER_GENESIS_HASH
+      || String(xlGenesis?.stateRoot).toLowerCase() !== XLAYER_GENESIS_STATE
+    ) {
+      throw new Error('okb: unexpected X Layer genesis hash or stateRoot');
+    }
+    const xlBlockNum = Number(weiOf(xlBlockHex, 'X Layer blockNumber'));
+    if (!Number.isSafeInteger(xlBlockNum) || xlBlockNum <= XLAYER_LEGACY_MIGRATION_BLOCK) {
+      throw new Error(`okb: invalid X Layer block number ${xlBlockHex}`);
+    }
+    if (Number(weiOf(ethDecHex, 'Ethereum OKB decimals')) !== 18) {
+      throw new Error(`okb: unexpected Ethereum OKB decimals ${ethDecHex}`);
+    }
+
+    const xlZeroWei = weiOf(xlZeroHex, 'X Layer zero balance');
+    const xlDeadWei = weiOf(xlDeadHex, 'X Layer dead balance');
+    const ethTotalWei = weiOf(ethTotalHex, 'Ethereum OKB totalSupply');
+    const ethZeroWei = weiOf(ethZeroHex, 'Ethereum OKB zero balance');
+    const ethDeadWei = weiOf(ethDeadHex, 'Ethereum OKB dead balance');
+    const ethBridgeWei = weiOf(ethBridgeHex, 'Ethereum OKB bridge balance');
+    const extraWeis = extraHex.map((h, i) => weiOf(h, `exclude balance ${extraCfg[i].holder}`));
+
+    if (!(ethTotalWei > 0n && ethTotalWei <= OKB_CAP_WEI)) {
+      throw new Error(`okb: Ethereum OKB totalSupply ${ethTotalWei} outside 0..cap`);
+    }
+    if (ethBridgeWei + ethZeroWei + ethDeadWei > ethTotalWei) {
+      throw new Error('okb: Ethereum bridge and burn balances exceed Ethereum totalSupply');
+    }
+
+    const ethUnmigratedWei = ethTotalWei - ethBridgeWei - ethZeroWei - ethDeadWei;
+    const burnedWei = xlZeroWei + xlDeadWei + ethZeroWei + ethDeadWei;
+    if (burnedWei >= OKB_CAP_WEI) {
+      throw new Error('okb: burned balance exceeds 21M cap');
+    }
+    const totalWei = OKB_CAP_WEI - burnedWei;
+    if (ethUnmigratedWei > totalWei) {
+      throw new Error('okb: unmigrated Ethereum balance exceeds total cap');
+    }
+    const xlayerWei = totalWei - ethUnmigratedWei;
+    const extraSumWei = extraWeis.reduce((a, b) => a + b, 0n);
+    if (extraSumWei >= totalWei) {
+      throw new Error('okb: excluded balances exceed total');
+    }
+
+    const total = toNum(totalWei);
+    const xlayerAmount = toNum(xlayerWei);
+    const ethAmount = toNum(ethUnmigratedWei);
+    if (![total, xlayerAmount, ethAmount].every(v => Number.isFinite(v) && v >= 0) || !(total > 0)) {
+      throw new Error(`okb: invalid computed supply (${total})`);
+    }
+
+    const excluded = [
+      ...(xlZeroWei > 0n ? [{ reason: 'X Layer zero address burn (unspendable native OKB)', holder: ZERO, amount: toNum(xlZeroWei), src: `${EXPLORER.xlayer}/address/${ZERO}` }] : []),
+      ...(xlDeadWei > 0n ? [{ reason: 'X Layer dead address burn (unspendable native OKB)', holder: BURN, amount: toNum(xlDeadWei), src: `${EXPLORER.xlayer}/address/${BURN}` }] : []),
+      ...(ethZeroWei > 0n ? [{ reason: 'Ethereum zero address burn (unspendable ERC-20 OKB)', holder: ZERO, amount: toNum(ethZeroWei), src: holderLink(ethToken, ZERO) }] : []),
+      ...(ethDeadWei > 0n ? [{ reason: 'Ethereum dead address burn (unspendable ERC-20 OKB)', holder: BURN, amount: toNum(ethDeadWei), src: holderLink(ethToken, BURN) }] : []),
+      ...extraCfg.map((e, i) => ({
+        reason: e.reason,
+        holder: e.holder,
+        amount: toNum(extraWeis[i]),
+        src: e.src || ((e.chain || 'xlayer') === 'eth' ? holderLink(ethToken, e.holder) : `${EXPLORER[e.chain || 'xlayer']}/address/${e.holder}`),
+      })).filter(e => e.amount > 0),
+    ];
+
+    const fmt2 = v => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return {
+      circulating: r.circulating === true ? toNum(totalWei - extraSumWei) : null,
+      total,
+      src: OKB_ABOUT_SRC,
+      parts: [
+        { chain: 'xlayer', amount: xlayerAmount, src: EXPLORER.xlayer },
+        { chain: 'eth', amount: ethAmount, src: `${EXPLORER.eth}/token/${OKB_ETH}` },
+      ],
+      excluded,
+      note: r.note || `Total equals the fixed 21,000,000 OKB cap after the August 2025 burn and mint/burn removal (${OKB_ABOUT_SRC}, ${OKB_ZKEVM_SRC}), net of ${fmt2(toNum(burnedWei))} OKB sent to zero and dead burn addresses on X Layer (block ${xlBlockNum.toLocaleString('en-US')}) and Ethereum. Unmigrated Ethereum ERC-20 OKB (${fmt2(ethAmount)} OKB outside bridge/burn locks on ${OKB_ETH}) plus ${fmt2(toNum(ethBridgeWei))} OKB locked in the legacy X Layer bridge (${OKB_XLAYER_LEGACY_BRIDGE}) are counted once inside the 21,000,000 cap (${fmt2(xlayerAmount)} OKB native on X Layer). Circulating is withheld because OKX does not publish an on-chain list of non-circulating treasury, exchange or ecosystem lock wallets.`,
+    };
+  },
 };
 
 const MONAD_RPC = 'https://rpc.monad.xyz';
@@ -1718,6 +1841,16 @@ const MONAD_REWARD_SCHEDULE = [
 ];
 const MONAD_STAKING_PRECOMPILE = '0x0000000000000000000000000000000000001000';
 const MONAD_SYSCALL_REWARD_SEL = '0x791bdcf3';
+
+const OKB_ETH = '0x75231f58b43240c9718dd58b4967c5114342a86c';
+const OKB_XLAYER_LEGACY_BRIDGE = '0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe';
+const OKB_CAP_WEI = 21_000_000n * 10n ** 18n;
+const XLAYER_CHAIN_ID = 196;
+const XLAYER_LEGACY_MIGRATION_BLOCK = 42_810_021;
+const XLAYER_GENESIS_HASH = '0x11f32f605beb94a1acb783cb3b6da6d7975461ce3addf441e7ad60c2ec95e88f';
+const XLAYER_GENESIS_STATE = '0xe3a7d8bae497945ba8ddc51c69564f60ad4c1a990b9c7bdbd27f7929bfa8f272';
+const OKB_ABOUT_SRC = 'https://github.com/okx/xlayer-docs/blob/main/developer/build-on-xlayer/about-xlayer.mdx';
+const OKB_ZKEVM_SRC = 'https://github.com/okx/xlayer-docs/blob/main/developer/network-information/zkevm-contracts.mdx';
 
 // Ripple USD (RLUSD): issued natively on the XRP Ledger (issuer rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De, on-chain Domain
 // "https://ripple.com/", 160-bit currency hex for "RLUSD") and on Ethereum (StablecoinUpgradeableV2 proxy

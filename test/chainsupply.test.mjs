@@ -2548,3 +2548,64 @@ test('ripple-usd: fails closed on XRPL/Ethereum errors, NaN obligations, wrong i
     globalThis.fetch = prev;
   }
 });
+
+// ---------------------------------------------------------------------------
+// bounty #140: OKB (OKB) ----
+test('bounty #140 okb: seed rule reads Ethereum ERC-20 total, subtracts burn, and withholds circulating', async () => {
+  const coins = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  const okb = coins['okb'];
+  assert.equal(okb.symbol, 'OKB');
+  assert.equal(okb.name, 'OKB');
+  assert.equal(okb.supply.method, 'tokens');
+  assert.equal(okb.supply.circulating, false);
+  assert.equal(okb.supply.max, 21000000);
+  assert.equal(okb.supply.parts[0].chain, 'eth');
+  assert.equal(okb.supply.parts[0].address, '0x75231f58b43240c9718dd58b4967c5114342a86c');
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    assert.ok(String(url).includes('eth.drpc.org'), 'calls Ethereum RPC');
+    const req = JSON.parse(opts.body);
+    assert.equal(req.method, 'eth_call');
+    const data = req.params[0].data;
+    let result;
+    if (data === '0x18160ddd') {
+      // 429,063.577598083360851373 OKB (18 decimals)
+      result = '0x000000000000000000000000000000000000000000005adb95493531c96785ad';
+    } else if (data === '0x313ce567') {
+      result = '0x0000000000000000000000000000000000000000000000000000000000000012'; // 18 decimals
+    } else if (data.startsWith('0x70a08231')) {
+      // balanceOf 0x...dead: 0.0001 OKB
+      result = '0x00000000000000000000000000000000000000000000000000005af3107a4000';
+    } else {
+      throw new Error('unexpected call data ' + data);
+    }
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) };
+  };
+
+  try {
+    const s = await readSupply(okb.supply);
+    assert.equal(s.circulating, null, 'circulating is withheld, never overstated');
+    assert.ok(Math.abs(s.total - 429063.577598) < 0.01, 'reads expected Ethereum total supply');
+    assert.equal(s.max, 21000000, 'max cap is 21 million per 2025 tokenomics upgrade');
+    assert.ok(s.parts.length === 1 && s.parts[0].chain === 'eth');
+    assert.ok(s.excluded.some(e => e.reason === 'Burn address'), 'subtracts burn address');
+    assert.ok(s.src.includes('0x75231f58b43240c9718dd58b4967c5114342a86c'));
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('bounty #140 okb: broken RPC fails closed instead of guessing supply', async () => {
+  const coins = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  const okb = coins['okb'];
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    return { ok: false, status: 503, statusText: 'Service Unavailable' };
+  };
+  try {
+    await assert.rejects(readSupply(okb.supply), /503/);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});

@@ -315,5 +315,25 @@
     "supply": {
       "method": "rlusd"
     }
+  },
+  "okb": {
+    "symbol": "OKB",
+    "name": "OKB",
+    "links": {
+      "website": "https://www.okx.com/okb",
+      "whitepaper": "https://www.okx.com/help/okb-token-economic-model-upgrade"
+    },
+    "supply": {
+      "method": "tokens",
+      "parts": [
+        {
+          "chain": "eth",
+          "address": "0x75231f58b43240c9718dd58b4967c5114342a86c"
+        }
+      ],
+      "max": 21000000,
+      "circulating": false,
+      "note": "Total is read from the OKB ERC-20 contract on Ethereum (0x75231f58b43240c9718dd58b4967c5114342a86c), less burns at 0x0/0xdead. Following OKX's August 2025 tokenomics overhaul and 65,256,712 OKB burn (https://www.okx.com/help/okb-token-economic-model-upgrade), total and maximum supply was permanently capped at 21,000,000 OKB and mint/burn capabilities removed. OKB serves as the native gas and governance token on X Layer; bridged copies and L2 tokens are counted once and not added to avoid double counting. Circulating is withheld: team, treasury and exchange reserve allocations are managed across unpublished custody accounts without individual on-chain labeling."
+    }
   }
 }

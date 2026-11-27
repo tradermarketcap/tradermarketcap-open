@@ -146,7 +146,44 @@ test('sui: a broken API answer fails the read', async () => {
   try { await assert.rejects(readSupply({ method: 'sui' }), /bad sui/); }
   finally { restore(); }
 });
+test('mmt: total and the two public emission multisigs come from Sui GraphQL, circulating stays withheld', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    assert.ok(String(url).includes('graphql.mainnet.sui.io'));
+    const query = JSON.parse(opts.body).query;
+    assert.ok(query.includes('0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT'));
+    assert.ok(query.includes('0x6c7ba0bccc5b6089500ce1d6c2b8fbd7bc5daeba3479ea268842f40fdfd3ec62'));
+    assert.ok(query.includes('0x8bb5a9f523ef6a0eb74d7c0f636fd3fbff3489135ca330ec2e2e656d60314de1'));
+    return { ok: true, status: 200, json: async () => ({ data: {
+      total: { decimals: 9, supply: '1240943937000000000' },
+      campaign: { balance: { totalBalance: '64000000000000000' } },
+      reserve: { balance: { totalBalance: '155943938000000000' } },
+    } }) };
+  };
+  try {
+    const s = await readSupply({ method: 'mmt' });
+    assert.equal(s.total, 1240943937);
+    assert.equal(s.circulating, null);
+    assert.equal(s.excluded.length, 2);
+    assert.equal(s.excluded[0].amount, 64000000);
+    assert.equal(s.excluded[1].amount, 155943938);
+    assert.equal(s.checked, true);
+  } finally { globalThis.fetch = realFetch; }
+});
 
+test('mmt: malformed metadata fails the read', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ data: { total: { decimals: 9 } } }) });
+  try { await assert.rejects(readSupply({ method: 'mmt' }), /bad mmt/); }
+  finally { globalThis.fetch = realFetch; }
+});
+test('mmt: seed rule attaches to the momentum coin id served by the site', () => {
+  const coins = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  assert.equal(coins.momentum.symbol, 'MMT');
+  assert.equal(coins.momentum.supply.method, 'mmt');
+  assert.equal(coins.momentum.supply.circulating, null);
+  assert.equal(coins.mmt, undefined);
+});
 // AERO on Base. Values below are the live reads on 2026-11-23, Base block 61,194,455:
 // new AERO totalSupply 2,149,873,046, sAERO 1,080,578,812, and the two migration vaults
 // 274,913,277 + 10,614,436. Aero's upgrade page publishes ~1.07B as the MAXIMUM circulating

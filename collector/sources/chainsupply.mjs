@@ -1708,6 +1708,31 @@ const METHODS = {
       note: r.note || `Total is the Ethereum ERC-20 totalSupply (${fmt(ethTotal)} RLUSD at ${EXPLORER.eth}/token/${RLUSD_ETH}) plus XRP Ledger issuer obligations (${fmt(xrplTotal)} RLUSD issued by ${RLUSD_XRPL_ISSUER} at ledger ${ledgerIndex}; ${RLUSD_SITE_SRC}). Bridged L2 copies (such as Base via Wormhole NTT) are backed by RLUSD locked on Ethereum and are not added again. Circulating subtracts ${fmt(nonCirculating)} RLUSD held in Ripple's XRPL distribution/treasury hotwallets (verified via gateway_balances hotwallet and XRPSCAN ripple.com labels), Ethereum MINTER_ROLE and BURNER_ROLE redemption multisigs (verified live via AccessControl.hasRole on ${RLUSD_ETH}), tokens stuck at the token proxy contract itself, and burn addresses.`,
     };
   },
+  // Momentum (MMT): reads total supply from official Sui GraphQL endpoint.
+  // Circulating is withheld per bounty rules as team, treasury and investor allocations are not individually provable on-chain.
+  async momentum(r = {}) {
+    const coinType = r.coinType || '0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT';
+    const gqlUrl = r.gql || 'https://graphql.mainnet.sui.io/graphql';
+    const explorer = r.explorer || `https://suivision.xyz/coin/${coinType}`;
+    const gql = await getJSON(gqlUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: `{ coinMetadata(coinType: "${coinType}") { decimals supply name symbol } }` }),
+    });
+    const meta = gql?.data?.coinMetadata;
+    if (!meta?.supply || typeof meta.decimals !== 'number') throw new Error('momentum: bad sui supply metadata');
+    const total = Number(BigInt(meta.supply)) / 10 ** meta.decimals;
+    if (!(total > 0) || !Number.isFinite(total)) throw new Error('momentum: bad total supply ' + total);
+
+    const publish = r.circulating === true;
+    return {
+      circulating: publish ? total : null,
+      total,
+      src: explorer,
+      excluded: [],
+      note: r.note || 'Momentum (MMT) on Sui. Total supply is read live from official Sui GraphQL endpoint (https://graphql.mainnet.sui.io/graphql) using coinType 0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT. Circulating supply is withheld per bounty rules: team, treasury and investor allocations are not individually provable on-chain with primary sources.',
+    };
+  },
 };
 
 const MONAD_RPC = 'https://rpc.monad.xyz';

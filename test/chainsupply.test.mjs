@@ -2548,3 +2548,72 @@ test('ripple-usd: fails closed on XRPL/Ethereum errors, NaN obligations, wrong i
     globalThis.fetch = prev;
   }
 });
+
+test('momentum: seed rule reads the Sui GraphQL coin metadata total and withholds circulating', async () => {
+  const coins = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  const mmt = coins['momentum'];
+  assert.equal(mmt.symbol, 'MMT');
+  assert.equal(mmt.name, 'Momentum');
+  assert.equal(mmt.supply.method, 'momentum');
+  assert.equal(mmt.supply.circulating, false);
+  assert.equal(mmt.supply.coinType, '0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT');
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    assert.ok(String(url).includes('graphql.mainnet.sui.io'), 'only Sui GraphQL host is called');
+    const req = JSON.parse(opts.body);
+    assert.ok(req.query.includes('coinMetadata'), 'requests coinMetadata');
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: {
+          coinMetadata: {
+            name: 'MMT',
+            symbol: 'MMT',
+            decimals: 9,
+            supply: '1240943937000000000'
+          }
+        }
+      })
+    };
+  };
+
+  try {
+    const s = await readSupply(mmt.supply);
+    assert.equal(s.circulating, null, 'circulating is withheld, never overstated');
+    assert.equal(s.total, 1240943937);
+    assert.ok(s.src.includes('suivision.xyz'));
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('momentum: GraphQL errors, bad coinType or malformed supply fail closed instead of guessing', async () => {
+  const prevFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: 'graphql error' }) });
+    await assert.rejects(readSupply({ method: 'momentum' }), /500|fetch/);
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { coinMetadata: null } })
+    });
+    await assert.rejects(readSupply({ method: 'momentum' }), /bad sui supply metadata/);
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: {
+          coinMetadata: { decimals: 9, supply: '0' }
+        }
+      })
+    });
+    await assert.rejects(readSupply({ method: 'momentum' }), /bad total supply/);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+

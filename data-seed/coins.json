@@ -316,5 +316,18 @@
     "supply": {
       "method": "rlusd"
     }
+  },
+  "okb": {
+    "symbol": "OKB",
+    "name": "OKB",
+    "links": {
+      "site": "https://www.okx.com/xlayer",
+      "contract": "https://etherscan.io/token/0x75231f58b43240c9718dd58b4967c5114342a86c"
+    },
+    "supply": {
+      "method": "okb",
+      "circulating": false,
+      "max": 21000000
+    }
   }
 }

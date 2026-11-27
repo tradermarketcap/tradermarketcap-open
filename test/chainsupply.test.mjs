@@ -2585,3 +2585,138 @@ test('ripple-usd: fails closed on XRPL/Ethereum errors, NaN obligations, wrong i
     globalThis.fetch = prev;
   }
 });
+
+const OKB_ETH_ADDR = '0x75231f58b43240c9718dd58b4967c5114342a86c';
+const OKB_BRIDGE_ADDR = '0x2a3dd3eb832af982ec71669e178424b10dca2ede';
+const OKB_XL_ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+const OKB_XL_DEAD_ADDR = '0x000000000000000000000000000000000000dead';
+const OKB_XL_HASH = '0x11f32f605beb94a1acb783cb3b6da6d7975461ce3addf441e7ad60c2ec95e88f';
+const OKB_XL_STATE = '0xe3a7d8bae497945ba8ddc51c69564f60ad4c1a990b9c7bdbd27f7929bfa8f272';
+const hexWord = n => '0x' + BigInt(n).toString(16).padStart(64, '0');
+const hexQty = n => '0x' + BigInt(n).toString(16);
+
+function fakeOkb(overrides = {}) {
+  const calls = [];
+  const cfg = {
+    httpStatus: 200,
+    rpcError: null,
+    xlChainId: '0xc4',
+    xlGenHash: OKB_XL_HASH,
+    xlGenState: OKB_XL_STATE,
+    xlBlock: hexQty(77_032_901n),
+    xlZeroWei: 95_084883_000000_000000n,
+    xlDeadWei: 61_997998_000000_000000n,
+    ethDecimals: 18n,
+    ethTotalWei: 429_063_577598_000000_000000n,
+    ethZeroWei: 0n,
+    ethDeadWei: 100_000_000_000_000n, // 0.0001 OKB
+    ethBridgeWei: 48_537262_000000_000000n,
+    ...overrides,
+  };
+  globalThis.fetch = async (url, opts = {}) => {
+    if (cfg.httpStatus !== 200) return { ok: false, status: cfg.httpStatus, text: async () => 'err' };
+    const req = JSON.parse(opts.body);
+    if (cfg.rpcError) return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, error: { message: cfg.rpcError } }) };
+    const isXLayer = String(url).includes('xlayer');
+    calls.push(`${isXLayer ? 'xl' : 'eth'}:${req.method}`);
+    let result;
+    if (isXLayer) {
+      if (req.method === 'eth_chainId') result = cfg.xlChainId;
+      else if (req.method === 'eth_getBlockByNumber') result = { hash: cfg.xlGenHash, stateRoot: cfg.xlGenState };
+      else if (req.method === 'eth_blockNumber') result = cfg.xlBlock;
+      else if (req.method === 'eth_getBalance') {
+        const who = String(req.params[0]).toLowerCase();
+        const raw = who === OKB_XL_ZERO_ADDR ? cfg.xlZeroWei : who === OKB_XL_DEAD_ADDR ? cfg.xlDeadWei : 0n;
+        result = typeof raw === 'string' ? raw : hexQty(raw);
+      }
+    } else {
+      assert.equal(req.method, 'eth_call');
+      assert.equal(req.params[0].to.toLowerCase(), OKB_ETH_ADDR);
+      const data = String(req.params[0].data).toLowerCase();
+      if (data === '0x313ce567') result = hexWord(cfg.ethDecimals);
+      else if (data === '0x18160ddd') result = hexWord(cfg.ethTotalWei);
+      else if (data.startsWith('0x70a08231')) {
+        const holder = '0x' + data.slice(-40);
+        if (holder === OKB_XL_ZERO_ADDR) result = hexWord(cfg.ethZeroWei);
+        else if (holder === OKB_XL_DEAD_ADDR) result = hexWord(cfg.ethDeadWei);
+        else if (holder === OKB_BRIDGE_ADDR) result = hexWord(cfg.ethBridgeWei);
+        else result = hexWord(0n);
+      }
+    }
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) };
+  };
+  return calls;
+}
+
+test('okb: seed rule reads 21M cap across X Layer native and Ethereum L1 net of burns without double counting, withholds circulating', async () => {
+  const prev = globalThis.fetch;
+  try {
+    const coins = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+    const entry = coins['okb'];
+    assert.equal(entry.symbol, 'OKB');
+    assert.equal(entry.name, 'OKB');
+    assert.equal(entry.supply.method, 'okb');
+    assert.equal(entry.supply.circulating, false);
+    assert.equal(entry.supply.max, 21000000);
+
+    const calls = fakeOkb();
+    const s = await readSupply(entry.supply);
+    assert.ok(calls.includes('xl:eth_chainId'));
+    assert.ok(calls.includes('xl:eth_getBlockByNumber'));
+    assert.ok(calls.includes('eth:eth_call'));
+
+    const burned = 95.084883 + 61.997998 + 0.0001;
+    const expectedTotal = 21_000_000 - burned;
+    const expectedEth = 429_063.577598 - 48.537262 - 0.0001;
+    const expectedXl = expectedTotal - expectedEth;
+
+    assert.equal(s.circulating, null);
+    assert.equal(s.max, 21000000);
+    assert.equal(s.checked, true);
+    assert.equal(s.method, 'okb');
+    assert.ok(Math.abs(s.total - expectedTotal) < 1e-5);
+    assert.deepEqual(s.parts.map(p => p.chain), ['xlayer', 'eth']);
+    assert.ok(Math.abs(s.parts[0].amount - expectedXl) < 1e-5);
+    assert.ok(Math.abs(s.parts[1].amount - expectedEth) < 1e-5);
+    assert.ok(Math.abs((s.parts[0].amount + s.parts[1].amount) - s.total) < 1e-6);
+    assert.equal(s.excluded.length, 3);
+    assert.match(s.note, /21,000,000 OKB cap/i);
+    assert.match(s.note, /Circulating is withheld/i);
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+test('okb: fails closed on X Layer chain/genesis errors, cap/bridge violations, wrong decimals, or malformed RPC output', async () => {
+  const prev = globalThis.fetch;
+  try {
+    fakeOkb({ xlChainId: '0x1' });
+    await assert.rejects(readSupply({ method: 'okb' }), /unexpected X Layer chainId/);
+
+    fakeOkb({ xlGenState: '0x' + '11'.repeat(32) });
+    await assert.rejects(readSupply({ method: 'okb' }), /unexpected X Layer genesis hash or stateRoot/);
+
+    fakeOkb({ xlBlock: hexQty(100n) });
+    await assert.rejects(readSupply({ method: 'okb' }), /invalid X Layer block number/);
+
+    fakeOkb({ ethDecimals: 6n });
+    await assert.rejects(readSupply({ method: 'okb' }), /unexpected Ethereum OKB decimals/);
+
+    fakeOkb({ ethTotalWei: 22_000_000n * 10n ** 18n });
+    await assert.rejects(readSupply({ method: 'okb' }), /outside 0\.\.cap/);
+
+    fakeOkb({ ethBridgeWei: 500_000n * 10n ** 18n });
+    await assert.rejects(readSupply({ method: 'okb' }), /exceed Ethereum totalSupply/);
+
+    fakeOkb({ xlZeroWei: 'not-hex' });
+    await assert.rejects(readSupply({ method: 'okb' }), /bad X Layer zero balance/);
+
+    fakeOkb({ httpStatus: 503 });
+    await assert.rejects(readSupply({ method: 'okb' }), /503/);
+
+    fakeOkb({ rpcError: 'execution reverted' });
+    await assert.rejects(readSupply({ method: 'okb' }), /execution reverted/);
+  } finally {
+    globalThis.fetch = prev;
+  }
+});

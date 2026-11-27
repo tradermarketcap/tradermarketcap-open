@@ -163,7 +163,7 @@ test('mmt: total and the two public emission multisigs come from Sui GraphQL, ci
   try {
     const s = await readSupply({ method: 'mmt' });
     assert.equal(s.total, 1240943937);
-    assert.equal(s.circulating, false);
+    assert.equal(s.circulating, null);
     assert.equal(s.excluded.length, 2);
     assert.equal(s.excluded[0].amount, 64000000);
     assert.equal(s.excluded[1].amount, 155943938);
@@ -176,6 +176,13 @@ test('mmt: malformed metadata fails the read', async () => {
   globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ data: { total: { decimals: 9 } } }) });
   try { await assert.rejects(readSupply({ method: 'mmt' }), /bad mmt/); }
   finally { globalThis.fetch = realFetch; }
+});
+test('mmt: seed rule attaches to the momentum coin id served by the site', () => {
+  const coins = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  assert.equal(coins.momentum.symbol, 'MMT');
+  assert.equal(coins.momentum.supply.method, 'mmt');
+  assert.equal(coins.momentum.supply.circulating, null);
+  assert.equal(coins.mmt, undefined);
 });
 // AERO on Base. Values below are the live reads on 2026-11-23, Base block 61,194,455:
 // new AERO totalSupply 2,149,873,046, sAERO 1,080,578,812, and the two migration vaults

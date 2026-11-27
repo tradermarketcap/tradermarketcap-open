@@ -2720,3 +2720,61 @@ test('okb: fails closed on X Layer chain/genesis errors, cap/bridge violations, 
     globalThis.fetch = prev;
   }
 });
+
+test('subsquid: seed rule reads the Ethereum mint and withholds circulating', async () => {
+  const coins = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  const sqd = coins['subsquid'];
+  assert.equal(sqd.symbol, 'SQD');
+  assert.equal(sqd.name, 'Subsquid');
+  assert.equal(sqd.supply.method, 'tokens');
+  assert.equal(sqd.supply.circulating, false);
+  assert.equal(sqd.supply.max, 1337000000);
+  assert.equal(sqd.supply.parts.length, 1);
+  assert.equal(sqd.supply.parts[0].chain, 'eth');
+  assert.equal(sqd.supply.parts[0].address, '0x1337420dED5ADb9980CFc35f8f2B054ea86f8aB1');
+  assert.match(sqd.supply.note, /docs\.sqd\.dev\/en\/other\/contracts/);
+  assert.match(sqd.supply.note, /subsquid-network-contracts/);
+  assert.match(sqd.supply.note, /1,337,000,000/);
+  // Registered L1 gateway. The nearby 0xcEe287… address holds no SQD.
+  assert.match(sqd.supply.note, /0xcEe284F754E854890e311e3280b767F80797180d/);
+  assert.doesNotMatch(sqd.supply.note, /0xcEe287D1767664B566589cf2454a37b38d35180d/);
+
+  const prevFetch = globalThis.fetch;
+  const SQD_TOTAL_RAW = (1337000000n * 10n ** 18n).toString();
+  globalThis.fetch = async (url, opts = {}) => {
+    const req = JSON.parse(opts.body);
+    assert.equal(req.method, 'eth_call');
+    const data = req.params[0].data;
+    let result;
+    if (data === '0x18160ddd') result = '0x' + BigInt(SQD_TOTAL_RAW).toString(16).padStart(64, '0');
+    else if (data === '0x313ce567') result = '0x' + BigInt(18).toString(16).padStart(64, '0');
+    else if (data.startsWith('0x70a08231')) result = '0x0';
+    else throw new Error('unexpected call data ' + data);
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) };
+  };
+
+  try {
+    const s = await readSupply(sqd.supply);
+    assert.equal(s.circulating, null);
+    assert.equal(s.total, 1337000000);
+    assert.equal(s.max, 1337000000);
+    assert.equal(s.parts[0].chain, 'eth');
+    assert.match(s.note, /docs\.sqd\.dev/);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('subsquid: Ethereum RPC errors fail closed', async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: 'rpc error' }) });
+  try {
+    await assert.rejects(readSupply({
+      method: 'tokens',
+      parts: [{ chain: 'eth', address: '0x1337420dED5ADb9980CFc35f8f2B054ea86f8aB1' }],
+      circulating: false,
+    }), /500/);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});

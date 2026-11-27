@@ -292,5 +292,16 @@
       "circulating": false,
       "note": "Total is the Monad Foundation's 100 billion MON genesis (https://monad.xyz/blog/mon-tokenomics-overview) plus piecewise consensus block rewards minted on-chain via syscallReward (25 MON/block across blocks 37,304,999..89,656,734, then 18 MON/block from MIP-12 block 89,656,735 onward; https://docs.monad.xyz/monad-arch/consensus/staking) less zero and dead address burns. Protocol EIP-1559 base-fee burns are not exposed cumulatively by Monad JSON-RPC or a primary Foundation endpoint and are not subtracted. Staked MON at the 0x1000 staking precompile belongs to delegators and remains circulating. Circulating supply is withheld per Foundation tokenomics disclosure: team, investor, Category Labs treasury and ecosystem allocations are locked off-chain without on-chain labeled contracts."
     }
+  },
+  "ripple-usd": {
+    "symbol": "RLUSD",
+    "name": "Ripple USD",
+    "links": {
+      "site": "https://ripple.com/solutions/stablecoin/",
+      "contract": "https://etherscan.io/token/0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD"
+    },
+    "supply": {
+      "method": "rlusd"
+    }
   }
 }

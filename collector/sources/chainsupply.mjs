@@ -1532,6 +1532,175 @@ const METHODS = {
       note: r.note || `Total is the Monad Foundation's 100 billion MON genesis (https://monad.xyz/blog/mon-tokenomics-overview) plus piecewise consensus block rewards minted on-chain via syscallReward (25 MON/block across blocks 37,304,999..89,656,734, then 18 MON/block from MIP-12 block 89,656,735 onward; https://docs.monad.xyz/monad-arch/consensus/staking) less ${burned.toLocaleString('en-US', { maximumFractionDigits: 0 })} MON burned at the zero and dead addresses. Protocol EIP-1559 base-fee burns are not exposed cumulatively by Monad JSON-RPC or a primary Foundation endpoint and are not subtracted. Staked MON (${staked.toLocaleString('en-US', { maximumFractionDigits: 0 })} MON at 0x1000) belongs to delegators and remains circulating. Circulating supply is withheld per Foundation tokenomics disclosure: team, investor, Category Labs treasury and ecosystem allocations are locked off-chain without on-chain labeled contracts.`,
     };
   },
+  // Ripple USD (RLUSD): native issuance on the XRP Ledger (gateway_balances obligations of Ripple's issuer account
+  // rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De) plus the Ethereum ERC-20 totalSupply (0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD).
+  // Circulating subtracts RLUSD held in Ripple's XRPL distribution/treasury wallets (r9c6A65... and r3oSpUh..., verified
+  // on XRPSCAN under domain ripple.com and cross-checked via gateway_balances hotwallet at the same validated ledger),
+  // RLUSD held in Ethereum MINTER_ROLE / BURNER_ROLE multisig vaults (verified live via AccessControl.hasRole), tokens
+  // stuck in the RLUSD proxy contract itself (no rescue function), and zero/dead burn balances.
+  async rlusd(r = {}) {
+    const xrplRpc = r.xrplRpc || RLUSD_XRPL_RPC;
+    const xrplCall = async (method, params) => {
+      const res = await getJSON(xrplRpc, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ method, params: [params] }),
+      });
+      const out = res?.result;
+      if (!out || out.status !== 'success') {
+        throw new Error(`rlusd: xrpl ${method} failed (${out?.error_message || out?.error || 'bad status'})`);
+      }
+      return out;
+    };
+    const parseDec = (v, what) => {
+      if (typeof v !== 'string' || !/^\d+(?:\.\d+)?$/.test(v.trim())) {
+        throw new Error(`rlusd: invalid ${what} (${JSON.stringify(v)})`);
+      }
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) throw new Error(`rlusd: non-finite ${what}`);
+      return n;
+    };
+
+    // Pin one validated XRPL ledger index so gross obligations and treasury hotwallet balances come from the exact same snapshot.
+    const info = await xrplCall('account_info', { account: RLUSD_XRPL_ISSUER, ledger_index: 'validated' });
+    const ledgerIndex = info.ledger_index;
+    if (!Number.isSafeInteger(ledgerIndex) || !(ledgerIndex > 80_000_000)) {
+      throw new Error('rlusd: invalid XRPL validated ledger_index');
+    }
+    const domainHex = info.account_data?.Domain;
+    const domain = typeof domainHex === 'string' && /^[0-9a-f]+$/i.test(domainHex)
+      ? Buffer.from(domainHex, 'hex').toString('utf8')
+      : '';
+    if (!/^https?:\/\/ripple\.com\/?$/i.test(domain)) {
+      throw new Error(`rlusd: unexpected XRPL issuer Domain (${domain})`);
+    }
+
+    const hotAddrs = RLUSD_XRPL_TREASURY.map(([a]) => a);
+    const [gbGross, gbNet] = await Promise.all([
+      xrplCall('gateway_balances', { account: RLUSD_XRPL_ISSUER, strict: true, ledger_index: ledgerIndex }),
+      xrplCall('gateway_balances', { account: RLUSD_XRPL_ISSUER, hotwallet: hotAddrs, strict: true, ledger_index: ledgerIndex }),
+    ]);
+    const xrplTotal = parseDec(gbGross.obligations?.[RLUSD_XRPL_HEX], 'XRPL RLUSD obligations');
+    if (!(xrplTotal > 0)) throw new Error('rlusd: zero XRPL RLUSD obligations');
+    const xrplNet = gbNet.obligations?.[RLUSD_XRPL_HEX] === undefined
+      ? 0
+      : parseDec(gbNet.obligations[RLUSD_XRPL_HEX], 'XRPL net obligations');
+
+    const xrplExcluded = [];
+    let xrplHotSum = 0;
+    for (const [acct, reason] of RLUSD_XRPL_TREASURY) {
+      const entries = gbNet.balances?.[acct] || [];
+      if (!Array.isArray(entries)) throw new Error(`rlusd: invalid hotwallet balances for ${acct}`);
+      let amt = 0;
+      for (const item of entries) {
+        if (item?.currency === RLUSD_XRPL_HEX) amt += parseDec(item.value, `XRPL hotwallet ${acct}`);
+      }
+      xrplHotSum += amt;
+      if (amt > 0) {
+        xrplExcluded.push({
+          reason,
+          holder: acct,
+          amount: amt,
+          src: `https://xrpscan.com/account/${acct}`,
+        });
+      }
+    }
+    if (Math.abs((xrplTotal - xrplHotSum) - xrplNet) > Math.max(1e-2, xrplTotal * 1e-9)) {
+      throw new Error(`rlusd: XRPL obligations mismatch (${xrplTotal} - ${xrplHotSum} != ${xrplNet})`);
+    }
+
+    // Ethereum reads: cap concurrency at 2 so public RPCs reuse TLS sockets cleanly.
+    const pool2 = async tasks => {
+      const out = new Array(tasks.length);
+      let k = 0;
+      await Promise.all([0, 1].map(async () => {
+        while (k < tasks.length) { const i = k++; out[i] = await tasks[i](); }
+      }));
+      return out;
+    };
+    const hasRoleCall = (roleHex, addr) => evm('eth', 'eth_call', [
+      { to: RLUSD_ETH, data: '0x91d14854' + roleHex + addr.toLowerCase().replace(/^0x/, '').padStart(64, '0') },
+      'latest',
+    ]);
+    const parseBoolWord = (hex, what) => {
+      if (typeof hex !== 'string' || !/^0x0*[01]$/i.test(hex) || hex.length < 66) {
+        throw new Error(`rlusd: bad hasRole response for ${what}`);
+      }
+      return BigInt(hex) === 1n;
+    };
+
+    const extraEth = (r.exclude || []).filter(e => (e.chain || 'eth') === 'eth');
+    const [ethDecHex, ethTotal, zeroBal, deadBal, selfBal, ...vaultResults] = await pool2([
+      () => evm('eth', 'eth_call', [{ to: RLUSD_ETH, data: '0x313ce567' }, 'latest']),
+      () => erc20TotalSupply('eth', RLUSD_ETH),
+      () => erc20Balance('eth', RLUSD_ETH, ZERO),
+      () => erc20Balance('eth', RLUSD_ETH, BURN),
+      () => erc20Balance('eth', RLUSD_ETH, RLUSD_ETH),
+      ...RLUSD_ETH_ROLE_VAULTS.map(([addr, roleHex, kind]) => async () => {
+        const [roleRaw, bal] = await Promise.all([
+          hasRoleCall(roleHex, addr),
+          erc20Balance('eth', RLUSD_ETH, addr),
+        ]);
+        return { addr, kind, active: parseBoolWord(roleRaw, `${kind}:${addr}`), bal };
+      }),
+      ...extraEth.map(e => async () => ({ extra: e, bal: await erc20Balance('eth', RLUSD_ETH, e.holder) })),
+    ]);
+
+    if (typeof ethDecHex !== 'string' || !/^0x[0-9a-f]+$/i.test(ethDecHex) || Number(BigInt(ethDecHex)) !== 18) {
+      throw new Error('rlusd: unexpected Ethereum RLUSD decimals');
+    }
+    const roleChecks = vaultResults.slice(0, RLUSD_ETH_ROLE_VAULTS.length);
+    const extraChecks = vaultResults.slice(RLUSD_ETH_ROLE_VAULTS.length);
+    if (
+      ![ethTotal, zeroBal, deadBal, selfBal, ...roleChecks.map(v => v.bal), ...extraChecks.map(v => v.bal)]
+        .every(v => Number.isFinite(v) && v >= 0)
+      || !(ethTotal > 0)
+    ) {
+      throw new Error('rlusd: invalid Ethereum RLUSD balance read');
+    }
+    if (!roleChecks.some(v => v.kind === 'MINTER' && v.active) || !roleChecks.some(v => v.kind === 'BURNER' && v.active)) {
+      throw new Error('rlusd: Ethereum MINTER_ROLE or BURNER_ROLE multisig verification failed');
+    }
+
+    const ethToken = { chain: 'eth', address: RLUSD_ETH };
+    const ethExcluded = [
+      ...(zeroBal > 0 ? [{ reason: 'Ethereum zero address (unspendable)', holder: ZERO, amount: zeroBal, src: holderLink(ethToken, ZERO) }] : []),
+      ...(deadBal > 0 ? [{ reason: 'Ethereum burn address', holder: BURN, amount: deadBal, src: holderLink(ethToken, BURN) }] : []),
+      ...(selfBal > 0 ? [{ reason: 'Sent to the RLUSD token proxy contract itself (no rescue function)', holder: RLUSD_ETH, amount: selfBal, src: holderLink(ethToken, RLUSD_ETH) }] : []),
+      ...RLUSD_ETH_ROLE_VAULTS.map(([addr, , , reason], i) => ({
+        reason,
+        holder: addr,
+        amount: roleChecks[i].active ? roleChecks[i].bal : 0,
+        src: holderLink(ethToken, addr),
+      })).filter(e => e.amount > 0),
+      ...extraChecks.map(({ extra, bal }) => ({
+        reason: extra.reason,
+        holder: extra.holder,
+        amount: bal,
+        src: extra.src || holderLink(ethToken, extra.holder),
+      })).filter(e => e.amount > 0),
+    ];
+
+    const excluded = [...xrplExcluded, ...ethExcluded];
+    const total = ethTotal + xrplTotal;
+    const nonCirculating = excluded.reduce((s, e) => s + e.amount, 0);
+    const circulating = total - nonCirculating;
+    if (!Number.isFinite(total) || !Number.isFinite(circulating) || !(circulating > 0 && circulating <= total)) {
+      throw new Error(`rlusd: invalid computed supply (total=${total}, circulating=${circulating})`);
+    }
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    return {
+      circulating: r.circulating === false ? null : circulating,
+      total,
+      src: RLUSD_SITE_SRC,
+      parts: [
+        { chain: 'eth', amount: ethTotal, src: `${EXPLORER.eth}/token/${RLUSD_ETH}` },
+        { chain: 'xrpl', amount: xrplTotal, src: `https://xrpscan.com/account/${RLUSD_XRPL_ISSUER}` },
+      ],
+      excluded,
+      note: r.note || `Total is the Ethereum ERC-20 totalSupply (${fmt(ethTotal)} RLUSD at ${EXPLORER.eth}/token/${RLUSD_ETH}) plus XRP Ledger issuer obligations (${fmt(xrplTotal)} RLUSD issued by ${RLUSD_XRPL_ISSUER} at ledger ${ledgerIndex}; ${RLUSD_SITE_SRC}). Bridged L2 copies (such as Base via Wormhole NTT) are backed by RLUSD locked on Ethereum and are not added again. Circulating subtracts ${fmt(nonCirculating)} RLUSD held in Ripple's XRPL distribution/treasury hotwallets (verified via gateway_balances hotwallet and XRPSCAN ripple.com labels), Ethereum MINTER_ROLE and BURNER_ROLE redemption multisigs (verified live via AccessControl.hasRole on ${RLUSD_ETH}), tokens stuck at the token proxy contract itself, and burn addresses.`,
+    };
+  },
 };
 
 const MONAD_RPC = 'https://rpc.monad.xyz';
@@ -1542,6 +1711,30 @@ const MONAD_REWARD_SCHEDULE = [
 ];
 const MONAD_STAKING_PRECOMPILE = '0x0000000000000000000000000000000000001000';
 const MONAD_SYSCALL_REWARD_SEL = '0x791bdcf3';
+
+// Ripple USD (RLUSD): issued natively on the XRP Ledger (issuer rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De, on-chain Domain
+// "https://ripple.com/", 160-bit currency hex for "RLUSD") and on Ethereum (StablecoinUpgradeableV2 proxy
+// 0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD, 18 decimals). L2 copies (such as Base via Wormhole NTT) are bridged from
+// Ethereum and sit inside Ethereum's totalSupply, so they are not added again.
+const RLUSD_ETH = '0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD';
+const RLUSD_XRPL_RPC = 'https://s1.ripple.com:51234';
+const RLUSD_XRPL_ISSUER = 'rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De';
+const RLUSD_XRPL_HEX = '524C555344000000000000000000000000000000';
+const RLUSD_SITE_SRC = 'https://ripple.com/solutions/stablecoin/';
+const RLUSD_MINTER_ROLE = 'f0887ba65ee2024ea881d91b74c2450ef19e1557f03bed3ea9f16b037cbe2dc9';
+const RLUSD_BURNER_ROLE = '9667e80708b6eeeb0053fa0cca44e028ff548e2a9f029edfeac87c118b08b7c8';
+const RLUSD_XRPL_TREASURY = [
+  ['r9c6A65SmhhZALrkMTpqc9X3kGjv5gtNNk', 'Ripple RLUSD distribution/treasury wallet 1 (XRPSCAN verified RLUSD 1, domain ripple.com)'],
+  ['r3oSpUhBuiEw4jqtmNrCAeUNoS4cH1TwhC', 'Ripple RLUSD distribution/treasury wallet 2 (XRPSCAN verified RLUSD 2, domain ripple.com)'],
+];
+const RLUSD_ETH_ROLE_VAULTS = [
+  ['0x97e9d0b0bCBE86E1e230b0FFd3A5F1f9B8428591', RLUSD_MINTER_ROLE, 'MINTER', 'Ripple RLUSD Minter treasury multisig (verified on-chain MINTER_ROLE)'],
+  ['0xd48EdE10152fcad67621Fc5A6aE30B5b79FeDd68', RLUSD_BURNER_ROLE, 'BURNER', 'Ripple RLUSD Burner redemption multisig (verified on-chain BURNER_ROLE, redeemed awaiting burn)'],
+  ['0xa2Eea193444B16fE2D18CFe977aceeea6Dd9c367', RLUSD_BURNER_ROLE, 'BURNER', 'Ripple RLUSD Burner redemption multisig (verified on-chain BURNER_ROLE, redeemed awaiting burn)'],
+  ['0xFbcA8B5f5794456B59aD4177E5b212d0Db600BB6', RLUSD_BURNER_ROLE, 'BURNER', 'Ripple RLUSD Burner redemption multisig (verified on-chain BURNER_ROLE)'],
+  ['0x860A80BD349dc4E46DC7345600eb627552ff898e', RLUSD_BURNER_ROLE, 'BURNER', 'Ripple RLUSD Burner redemption multisig (verified on-chain BURNER_ROLE)'],
+  ['0xB723D5ef303711d774FED6435ED6F5E82ED155ea', RLUSD_BURNER_ROLE, 'BURNER', 'Ripple RLUSD Burner redemption multisig (verified on-chain BURNER_ROLE)'],
+];
 
 const AMANTRA = 10n ** 18n;
 const MANTRA_BURN = 'mantra1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqcg2my8';

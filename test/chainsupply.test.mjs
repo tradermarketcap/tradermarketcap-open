@@ -146,6 +146,29 @@ test('sui: a broken API answer fails the read', async () => {
   try { await assert.rejects(readSupply({ method: 'sui' }), /bad sui/); }
   finally { restore(); }
 });
+test('mmt: total comes from Sui GraphQL and circulating stays withheld', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    assert.ok(String(url).includes('graphql.mainnet.sui.io'));
+    const query = JSON.parse(opts.body).query;
+    assert.ok(query.includes('0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT'));
+    return { ok: true, status: 200, json: async () => ({ data: { coinMetadata: { decimals: 9, supply: '1240943937000000000' } } }) };
+  };
+  try {
+    const s = await readSupply({ method: 'mmt', max: 1000000000 });
+    assert.equal(s.total, 1240943937);
+    assert.equal(s.circulating, false);
+    assert.deepEqual(s.excluded, []);
+    assert.equal(s.checked, true);
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('mmt: malformed metadata fails the read', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ data: { coinMetadata: { decimals: 9 } } }) });
+  try { await assert.rejects(readSupply({ method: 'mmt' }), /bad mmt/); }
+  finally { globalThis.fetch = realFetch; }
+});
 
 // AERO on Base. Values below are the live reads on 2026-11-23, Base block 61,194,455:
 // new AERO totalSupply 2,149,873,046, sAERO 1,080,578,812, and the two migration vaults

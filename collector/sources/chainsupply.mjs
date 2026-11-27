@@ -725,6 +725,23 @@ const METHODS = {
       excluded: [{ reason: 'Locked allocations (foundation, community reserve, early supporters)', amount: total - circ, src: 'https://blog.sui.io/token-release-schedule/' }],
       note: 'Total from Sui GraphQL; circulating from the official Sui Explorer circulation API (Sui JSON-RPC is deprecated). Stake rewards are circulating when paid' };
   },
+  async mmt() {
+    const coinType = '0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT';
+    const src = 'https://graphql.mainnet.sui.io/graphql';
+    const gql = await getJSON(src, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: `{ coinMetadata(coinType: "${coinType}") { decimals supply } }` }),
+    });
+    const meta = gql?.data?.coinMetadata;
+    if (!meta?.supply || !Number.isInteger(meta.decimals)) throw new Error('bad mmt supply metadata');
+    const total = Number(BigInt(meta.supply)) / 10 ** meta.decimals;
+    if (!(total > 0)) throw new Error('bad mmt total supply ' + total);
+    return {
+      circulating: false, total, src,
+      excluded: [],
+      note: 'MMT coin type is named in Momentum’s own msafe-sui-app-store repository (src/apps/mmt-dex/types.ts); total supply is read from Sui GraphQL mainnet. Momentum publishes a 4-year team cliff and a 12-month investor cliff with 48-month vesting (docs.mmt.finance/overview/mmt-token.md) but no per-wallet addresses for those locks, and no explorer label ties a live holder to them, so circulating stays withheld rather than overstated.',
+    };
+  },
   // Aptos (APT): the Aptos Foundation publishes its own live supply API, linked as "Current
   // Token Supply API" on the Mainnet row of aptos.dev/network/nodes/networks. That is a
   // first-party source and it already nets out the locked community/foundation vesting tranches

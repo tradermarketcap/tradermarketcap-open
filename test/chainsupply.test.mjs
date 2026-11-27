@@ -2286,3 +2286,67 @@ test('monad: invalid configuration fails closed rather than guessing', async () 
   }
   assert.equal(globalThis.fetch, prev, 'globalThis.fetch is restored after test');
 });
+
+test('initia: seed rule reads the interwoven-1 bank total and withholds circulating', async () => {
+  const coins = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+  const initia = coins['initia'];
+  assert.equal(initia.symbol, 'INIT');
+  assert.equal(initia.name, 'Initia');
+  assert.equal(initia.supply.method, 'initia');
+  assert.equal(initia.supply.circulating, false);
+  assert.equal(initia.supply.max, 1000000000);
+  assert.equal(initia.supply.denom, 'uinit');
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async url => {
+    const u = String(url);
+    if (u.includes('/cosmos/bank/v1beta1/supply/by_denom?denom=uinit')) {
+      return { ok: true, json: async () => ({ amount: { denom: 'uinit', amount: '1000000000000000' } }) };
+    }
+    if (u.includes('/cosmos/distribution/v1beta1/community_pool')) {
+      return { ok: true, json: async () => ({ pool: [{ denom: 'uinit', amount: '483000000000' }] }) };
+    }
+    throw new Error('unexpected url: ' + u);
+  };
+
+  try {
+    const s = await readSupply(initia.supply);
+    assert.equal(s.circulating, null, 'circulating is withheld, never overstated');
+    assert.equal(s.max, 1000000000);
+    assert.equal(s.total, 1000000000);
+    assert.equal(s.excluded.length, 1);
+    assert.equal(s.excluded[0].amount, 483000);
+    assert.ok(s.excluded[0].reason.includes('Community pool'));
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('initia: LCD errors and malformed supply fail closed instead of guessing', async () => {
+  const prevFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: 'internal error' }) });
+    await assert.rejects(readSupply({ method: 'initia' }), /500|fetch/);
+
+    globalThis.fetch = async url => {
+      const u = String(url);
+      if (u.includes('/cosmos/bank/v1beta1/supply/by_denom')) {
+        return { ok: true, json: async () => ({ amount: { denom: 'wrong_denom', amount: '1000' } }) };
+      }
+      return { ok: true, json: async () => ({ pool: [] }) };
+    };
+    await assert.rejects(readSupply({ method: 'initia' }), /bad bank supply/);
+
+    globalThis.fetch = async url => {
+      const u = String(url);
+      if (u.includes('/cosmos/bank/v1beta1/supply/by_denom')) {
+        return { ok: true, json: async () => ({ amount: { denom: 'uinit', amount: 'NaN' } }) };
+      }
+      return { ok: true, json: async () => ({ pool: [] }) };
+    };
+    await assert.rejects(readSupply({ method: 'initia' }), /bad bank supply/);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+

@@ -379,7 +379,8 @@ const METHODS = {
       const b = (await getJSON(`${r.lcd}/cosmos/bank/v1beta1/balances/${e.holder}/by_denom?denom=${r.denom}`)).balance;
       excluded.push({ reason: e.reason, holder: e.holder, amount: Number(b.amount) / dec, src: r.explorer ? r.explorer + e.holder : undefined });
     }
-    return { circulating: total - excluded.reduce((s, e) => s + e.amount, 0), total, src: r.explorer || r.lcd, excluded, note: r.note };
+    const publish = r.circulating !== false;
+    return { circulating: publish ? total - excluded.reduce((s, e) => s + e.amount, 0) : null, total, src: r.explorer || r.lcd, excluded, note: r.note };
   },
   // Algorand: total ALGO from a public algod node, minus the Algorand Foundation wallets the Foundation
   // publishes at algorand.co/algorand-foundation/transparency (archived copy cited in coins.json; the
@@ -1530,6 +1531,50 @@ const METHODS = {
       src: 'https://docs.monad.xyz/monad-arch/consensus/staking',
       excluded,
       note: r.note || `Total is the Monad Foundation's 100 billion MON genesis (https://monad.xyz/blog/mon-tokenomics-overview) plus piecewise consensus block rewards minted on-chain via syscallReward (25 MON/block across blocks 37,304,999..89,656,734, then 18 MON/block from MIP-12 block 89,656,735 onward; https://docs.monad.xyz/monad-arch/consensus/staking) less ${burned.toLocaleString('en-US', { maximumFractionDigits: 0 })} MON burned at the zero and dead addresses. Protocol EIP-1559 base-fee burns are not exposed cumulatively by Monad JSON-RPC or a primary Foundation endpoint and are not subtracted. Staked MON (${staked.toLocaleString('en-US', { maximumFractionDigits: 0 })} MON at 0x1000) belongs to delegators and remains circulating. Circulating supply is withheld per Foundation tokenomics disclosure: team, investor, Category Labs treasury and ecosystem allocations are locked off-chain without on-chain labeled contracts.`,
+    };
+  },
+  // Initia (INIT): reads interwoven-1 bank total from public node and records community pool.
+  // Team, investor and VIP allocations are not individually provable on-chain via primary sources,
+  // so circulating is withheld per bounty rules.
+  async initia(r = {}) {
+    const lcd = r.lcd || 'https://rest.initia.xyz';
+    const dec = 10 ** (r.decimals ?? 6);
+    const denom = r.denom || 'uinit';
+    const explorer = r.explorer || 'https://scan.initia.xyz/initia/address/';
+    const [sup, cp] = await Promise.all([
+      getJSON(`${lcd}/cosmos/bank/v1beta1/supply/by_denom?denom=${denom}`),
+      r.communityPool !== false ? getJSON(`${lcd}/cosmos/distribution/v1beta1/community_pool`).catch(() => null) : null,
+    ]);
+    const rawTotal = sup?.amount?.amount;
+    if (sup?.amount?.denom !== denom || typeof rawTotal !== 'string' || !/^\d+$/.test(rawTotal)) {
+      throw new Error('initia: bad bank supply');
+    }
+    const total = Number(rawTotal) / dec;
+    if (!Number.isFinite(total) || total <= 0) {
+      throw new Error('initia: bad total supply');
+    }
+    const excluded = [];
+    if (cp?.pool && Array.isArray(cp.pool)) {
+      const p = cp.pool.find(x => x?.denom === denom);
+      if (p && typeof p.amount === 'string') {
+        const amt = Number(p.amount) / dec;
+        if (Number.isFinite(amt) && amt >= 0) {
+          excluded.push({ reason: 'Community pool (on-chain treasury)', amount: amt, src: `${lcd}/cosmos/distribution/v1beta1/community_pool` });
+        }
+      }
+    }
+    for (const e of r.exclude || []) {
+      const b = (await getJSON(`${lcd}/cosmos/bank/v1beta1/balances/${e.holder}/by_denom?denom=${denom}`)).balance;
+      const amt = Number(b?.amount) / dec;
+      if (Number.isFinite(amt)) excluded.push({ reason: e.reason, holder: e.holder, amount: amt, src: explorer ? explorer + e.holder : undefined });
+    }
+    const publish = r.circulating === true;
+    return {
+      circulating: publish ? total - excluded.reduce((s, e) => s + e.amount, 0) : null,
+      total,
+      src: explorer || lcd,
+      excluded,
+      note: r.note || 'Initia (INIT) on interwoven-1 mainnet. Total supply is read live from the chain (1,000,000,000 INIT) via the Cosmos bank module on public node https://rest.initia.xyz. Circulating supply is withheld: team (15%), investor (15.25%), VIP (25%) and foundation lockups are not individually provable on-chain with primary sources; per bounty instructions, circulating is withheld rather than overstated.',
     };
   },
 };

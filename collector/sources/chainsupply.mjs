@@ -763,7 +763,7 @@ const METHODS = {
     if (campaignAmount + reserveAmount > total) throw new Error('mmt exclusions above total');
     return {
       circulating: null, total, src, excluded,
-      note: 'MMT coin type is named in Momentum’s own msafe-sui-app-store repository (src/apps/mmt-dex/types.ts); total supply and the two public emission multisig balances are read from Sui GraphQL mainnet. The multisigs are named in Momentum’s official emissions announcement. Team and investor vesting schedules are published at docs.mmt.finance/overview/mmt-token.md but their wallet addresses are not, and no explorer label ties a live holder to them, so circulating stays withheld rather than overstated.',
+      note: 'MMT coin type is named in Momentum’s own mmt-finance/mmt-coin repository (Published.toml, published-at 0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608); total supply and the two public emission multisig balances are read from Sui GraphQL mainnet. The multisigs are named in Momentum’s official emissions announcement. Team and investor vesting schedules are published at docs.mmt.finance/overview/mmt-token.md but their wallet addresses are not, and no explorer label ties a live holder to them, so circulating stays withheld rather than overstated.',
     };
   },
   // Aptos (APT): the Aptos Foundation publishes its own live supply API, linked as "Current
